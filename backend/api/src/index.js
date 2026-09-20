@@ -73,6 +73,8 @@ import carbonTokenRoutes from './routes/carbonTokenRoutes.js'
 import mlRoutes from './routes/mlRoutes.js'
 import tireAnalyticsRoutes from './routes/tireAnalyticsRoutes.js'
 import arLoadingRoutes from './routes/arLoadingRoutes.js'
+import relayRoutes from './routes/relayRoutes.js'
+import iotColdChainRoutes from './routes/iotColdChainRoutes.js'
 
 // ============================================================================
 // 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
@@ -578,6 +580,8 @@ app.use('/api/carbon-credits', carbonTokenRoutes)
 app.use('/api/ml', mlRoutes)
 app.use('/api/tire-analytics', tireAnalyticsRoutes)
 app.use('/api/ar-loading', arLoadingRoutes)
+app.use('/api/relay', relayRoutes)
+app.use('/api/iot/cold-chain', iotColdChainRoutes)
 
 // ============================================================================
 // 🆕 BLOCKCHAIN MONITORING ROUTES
