@@ -29,5 +29,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('No loads available'), findsOneWidget);
+    expect(
+      find.text('New load offers will appear here as they become available.'),
+      findsOneWidget,
+    );
   });
 }
