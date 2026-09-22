@@ -1,5 +1,5 @@
 import { ethers } from 'ethers';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID as uuidv4 } from 'node:crypto';
 import crypto from 'crypto';
 import logger from '../api/src/middleware/logger.js';
 import { supabase, supabaseAdmin } from '../api/src/config/db.js';
