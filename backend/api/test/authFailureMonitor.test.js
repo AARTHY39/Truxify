@@ -16,7 +16,9 @@ import authFailureMonitor from '../src/middleware/authFailureMonitor.js';
 
 // The middleware keys its failure counters by IP in a module-level Map that
 // lives for the whole file, so every test needs its own IP to stay isolated.
-function createApp(statusCode = 401, ip = '127.0.0.1') {
+// Loopback is allowlisted by the middleware (127.0.0.1 / ::1), so the default
+// here has to be a routable address or every request would skip the monitor.
+function createApp(statusCode = 401, ip = '10.0.0.100') {
   const app = express();
 
   app.use((req, res, next) => {
@@ -73,7 +75,7 @@ describe('authFailureMonitor', () => {
     expect(warnMock).toHaveBeenCalledTimes(1);
 
     expect(warnMock.mock.calls[0][0]).toMatchObject({
-      ip: '127.0.0.1',
+      ip: '10.0.0.100',
       method: 'GET',
       path: '/test',
       statusCode: 401,
@@ -103,7 +105,9 @@ describe('authFailureMonitor', () => {
     expect(warnMock).not.toHaveBeenCalled();
   });
 
-  it('does not run in production', async () => {
+  it('keeps monitoring in production', async () => {
+    // The monitor bans brute-force sources; disabling it outside development
+    // would turn the protection off exactly where it is needed.
     process.env.NODE_ENV = 'production';
 
     const app = createApp(401, '10.0.0.5');
@@ -112,6 +116,7 @@ describe('authFailureMonitor', () => {
     await request(app).get('/test');
     await request(app).get('/test');
 
-    expect(warnMock).not.toHaveBeenCalled();
+    expect(warnMock).toHaveBeenCalledTimes(1);
+    expect(warnMock.mock.calls[0][0]).toMatchObject({ ip: '10.0.0.5', failureCount: 3 });
   });
 });
