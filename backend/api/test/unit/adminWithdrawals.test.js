@@ -10,6 +10,7 @@ const adminDbMock = {
 vi.mock('../../src/config/db.js', () => ({
   supabaseAdmin: adminDbMock,
   supabase: adminDbMock,
+  getAdminClient: () => adminDbMock,
 }));
 
 vi.mock('../../src/middleware/auth.js', () => ({
