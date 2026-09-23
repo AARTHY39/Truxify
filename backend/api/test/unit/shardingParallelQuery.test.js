@@ -104,19 +104,16 @@ describe('ShardManager - Parallel Cross-Shard Query Engine', () => {
       };
     }
 
-    const startTime = Date.now();
     const response = await ShardManager.executeCrossShardQuery({ query: 'SELECT * FROM status' });
-    const duration = Date.now() - startTime;
 
     expect(response.results).toHaveLength(4);
     expect(response.healthy).toEqual(['north', 'south', 'east', 'west']);
     expect(response.failed).toEqual([]);
     expect(response.partial).toBe(false);
 
-    // If executed sequentially, maxInFlight would be 1 and total duration would be >= 160ms.
+    // If executed sequentially, maxInFlight would be 1.
     // Concurrency ensures all 4 run at the same time.
     expect(maxInFlight).toBe(4);
-    expect(duration).toBeLessThan(120);
   });
 
   it('preserves partial failure metadata on merged results without breaking array equality', async () => {

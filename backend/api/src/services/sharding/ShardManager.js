@@ -289,8 +289,21 @@ class ShardManager {
       }
 
       try {
-        let queryPromise = shard.pool.query(queryText, queryParams);
-        if (options.timeoutMs && options.timeoutMs > 0) {
+        const hasTimeout = Boolean(options.timeoutMs && options.timeoutMs > 0);
+        const queryConfig = hasTimeout
+          ? {
+              text: queryText,
+              values: queryParams,
+              statement_timeout: options.timeoutMs,
+              query_timeout: options.timeoutMs,
+            }
+          : null;
+
+        let queryPromise = queryConfig
+          ? shard.pool.query(queryConfig, queryParams)
+          : shard.pool.query(queryText, queryParams);
+
+        if (hasTimeout) {
           let timer;
           const timeoutPromise = new Promise((_, reject) => {
             timer = setTimeout(() => {
