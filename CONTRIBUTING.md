@@ -201,6 +201,19 @@ git commit --no-verify -m "fix(cache): resolve Redis cache-aside TTL expiry on d
 
 ---
 
+### ✅ Before Opening a Pull Request
+
+Before opening your PR, verify:
+
+- [ ] You are working on a dedicated branch and not `main`.
+- [ ] Your changes are limited to the scope of the issue.
+- [ ] Relevant tests have been run and pass successfully.
+- [ ] Code formatting and linting checks have been completed.
+- [ ] No API keys, passwords, tokens, or other secrets are included.
+- [ ] Documentation has been updated if your changes require it.
+- [ ] The related issue is linked in the PR description.
+- [ ] You have reviewed your changes and confirmed the PR is ready for review.
+
 ## 🏷️ Issue Labels Guide
 
 | Label | Description |
