@@ -500,7 +500,12 @@ export async function matchEnRouteLoads({
   // as text ('12 X 6 X 6 ft'), so normalize those to the numeric fields the
   // model consumes.
   const availableLoads = offers
-    .filter(o => o.pickup_lat && o.pickup_lng && o.drop_lat && o.drop_lng)
+    .filter(o =>
+      Number.isFinite(Number(o.pickup_lat)) &&
+      Number.isFinite(Number(o.pickup_lng)) &&
+      Number.isFinite(Number(o.drop_lat)) &&
+      Number.isFinite(Number(o.drop_lng))
+    )
     .map(o => {
       const dims = parseDimensions(o.dimensions);
       return {
@@ -548,7 +553,7 @@ export async function matchEnRouteLoads({
   // Haversine fallback — score by distance to pickup
   if (!mlUsed || recommendations.length === 0) {
     recommendations = offers
-      .filter(o => o.pickup_lat && o.pickup_lng)
+      .filter(o => Number.isFinite(Number(o.pickup_lat)) && Number.isFinite(Number(o.pickup_lng)))
       .map(o => {
         const dtKm = _haversineKm(currentLat, currentLng, Number(o.pickup_lat), Number(o.pickup_lng));
         return {
