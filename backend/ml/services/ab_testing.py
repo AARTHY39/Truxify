@@ -115,6 +115,23 @@ class ABTestModel:
                     )
                 }
 
+
+            comparable_metrics = [
+                values for values in results.values()
+                if values.get('production') is not None
+                and values.get('shadow') is not None
+            ]
+
+            if not comparable_metrics:
+                return {
+                    'test_id': test_id,
+                    'results': results,
+                    'shadow_better': False,
+                    'should_rollback': False,
+                    'error': 'Insufficient metrics for production vs shadow comparison',
+                    'timestamp': datetime.utcnow().isoformat()
+                }
+
             is_better = self.is_shadow_better(results)
 
             return {
