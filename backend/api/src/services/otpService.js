@@ -326,19 +326,17 @@ export async function incrementOtpAttempts(otpId) {
   if (!supabaseAdmin || !otpId) return 0;
 
   try {
-    const { data, error } = await supabaseAdmin
-      .from('phone_otps')
-      .update({ attempts: supabaseAdmin.rpc ? 'attempts + 1' : 1 })
-      .eq('id', otpId)
-      .select('attempts')
-      .single();
+    const { data, error } = await supabaseAdmin.rpc(
+      'increment_otp_attempts',
+      { otp_id: otpId }
+    );
 
     if (error) {
       logger.error({ err: error, otpId }, 'Failed to increment OTP attempts');
       return 0;
     }
 
-    return data?.attempts || 0;
+    return data ?? 0;
   } catch (err) {
     logger.error({ err, otpId }, 'Error incrementing OTP attempts');
     return 0;
