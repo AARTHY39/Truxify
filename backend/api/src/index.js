@@ -520,6 +520,10 @@ app.use('/api/orders', authenticate, fraudDetectionMiddleware, networkAnalysisMi
 // long-haul loads. Sits behind authenticate + per-route policy checks.
 app.use('/api/cross-dock', authenticate, fraudDetectionMiddleware, networkAnalysisMiddleware, crossDockRoutes)
 app.use('/api/payments', authenticate, fraudDetectionMiddleware, networkAnalysisMiddleware, paymentRoutes)
+// Lumper fee escrow (broker deposit / driver receipt release). The router
+// already applies `authenticate` + `userLimiter` on each of its own routes,
+// so no additional middleware is layered on here.
+app.use('/api/lumper-escrow', lumperEscrowRoutes)
 app.use('/api/driver', deadheadRoutes)
 app.use('/api/orders', trackingRoutes)
 app.use('/api/driver', driverRoutes)
