@@ -1,52 +1,81 @@
-router.get(
-  '/tickets/:id',
-  authenticate,
-  userLimiter,
-  validateParams(uuidParamSchema),
-  requirePolicy('ticket:view', async (req) => {
-    const { data: ticket } = await userDb(req)
-      .from('support_tickets')
-      .select('id, user_id')
-      .eq('id', req.params.id)
-      .maybeSingle();
+/**
+ * Middleware to enforce policy-based authorization.
+ *
+ * This middleware evaluates the named policy action against the authenticated
+ * user (req.user) and optionally resolves a resource from the request for
+ * ownership checks.
+ *
+ * Note: Authorization logging (grants, denials, unknown actions) is handled
+ * internally by policyEngine.authorize(). This middleware only handles HTTP
+ * response generation and error propagation — no duplicate logging.
+ *
+ * Backward Compatible:
+ * - Same function signature: requirePolicy(action, getResource)
+ * - Same behavior: checks role + optional ownership
+ * - Same error responses: 401/403 with { error: message }
+ */
 
-    return { ticket };
-  }),
-  async (req, res) => {
-    const ticketId = req.params.id;
+import { policy, PolicyError } from '../security/policyEngine.js';
 
-    try {
-      const { data: ticket, error } = await userDb(req)
-        .from('support_tickets')
-        .select(TICKET_DETAIL_COLUMNS)
-        .eq('id', ticketId)
-        .maybeSingle();
+/**
+ * Maps a thrown authorization error to the correct HTTP response.
+ * PolicyError carries its own status code (401/403/404); anything else is
+ * an unexpected failure and is reported as a generic 500.
+ */
+function sendAuthorizationError(res, err) {
+  if (err instanceof PolicyError) {
+    return res.status(err.status).json({ error: err.message });
+  }
+  return res.status(500).json({ error: 'Internal Server Error' });
+}
 
-      if (error) {
-        return res.status(500).json({
-          error: 'Failed to fetch support ticket.',
-          details: error.message,
-        });
-      }
-
-      if (!ticket) {
-        return res.status(404).json({
-          error: 'Support ticket not found.',
-        });
-      }
-
-      res.json(ticket);
-    } catch (err) {
-      logger.error(
-        '[SupportRoutes] Error:',
-        err?.message || err
-      );
-
-      res.status(500).json({
-        error: err?.message || 'Internal Server Error',
+/**
+ * Middleware to enforce policy-based authorization.
+ *
+ * @param {string}   action       - The policy action to check.
+ * @param {function} [getResource] - Optional async function that resolves the
+ *   resource from the request for ownership checks.
+ *
+ * A policy that is gated by ownership *alone* (no role restriction) cannot be
+ * evaluated without a resource, so omitting `getResource` for such a policy is
+ * a misconfiguration.
+ */
+export function requirePolicy(action, getResource) {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({
+        error: 'Not authenticated: req.user is missing.'
       });
     }
-  }
-);
 
+    const requestId = req.requestId || req.id;
 
+    if (policy.isOwnershipOnlyPolicy(action) && !getResource) {
+      const message = `Misconfigured policy '${action}': ownership-only policies require a getResource resolver.`;
+      console.error(`[requirePolicy] ${message}`);
+      return res.status(500).json({ error: message });
+    }
+
+    if (getResource) {
+      Promise.resolve(getResource(req))
+        .then((resource) => {
+          try {
+            policy.authorize(req.user, action, resource, { requestId });
+            next();
+          } catch (err) {
+            return sendAuthorizationError(res, err);
+          }
+        })
+        .catch((err) => {
+          return sendAuthorizationError(res, err);
+        });
+    } else {
+      try {
+        policy.authorize(req.user, action, undefined, { requestId });
+        next();
+      } catch (err) {
+        return sendAuthorizationError(res, err);
+      }
+    }
+  };
+}
