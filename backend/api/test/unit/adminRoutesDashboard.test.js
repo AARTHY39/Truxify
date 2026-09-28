@@ -24,6 +24,7 @@ vi.mock('../../src/config/db.js', () => ({
   get supabase() { return mockSupabase; },
   // No service-role key in tests — the route must fall back to the anon mock.
   supabaseAdmin: undefined,
+  getAdminClient: () => mockSupabase,
 }));
 
 vi.mock('../../src/middleware/logger.js', () => ({
@@ -64,7 +65,7 @@ describe('adminRoutes', () => {
       });
       // revenue query
       mockSupabase.from.mockReturnValueOnce({
-        select: vi.fn(() => ({ gte: vi.fn(() => ({ in: vi.fn(async () => ({ data: [{ total_amount: 100 }, { total_amount: 200 }], error: null })) })) })),
+        select: vi.fn(() => ({ gte: vi.fn(() => ({ in: vi.fn(async () => ({ data: [{ total_amount: 10000 }, { total_amount: 20000 }], error: null })) })) })),
       });
 
       const res = await request(makeApp()).get('/admin/dashboard');
