@@ -778,6 +778,14 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
 
   Future<void> _showCancel() async {
     bool isLoading = false;
+    String? selectedReason;
+    const cancellationReasons = <String>[
+      'Plans changed',
+      'Driver delayed',
+      'Wrong booking details',
+      'Found another truck',
+      'Other',
+    ];
     final rawFee = _order?['cancellation_fee'];
     final feeInRupees = rawFee is num ? rawFee / 100 : null;
     String? feeText = feeInRupees != null ? 'Cancellation fee ₹${feeInRupees.toStringAsFixed(2)}' : null;
@@ -803,15 +811,41 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
                 const SizedBox(height: 6),
                 Text('This fee is charged for cancelling after assignment.', textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: TruxifyColors.adaptiveSecondaryText(context))),
                 const SizedBox(height: 18),
+                DropdownButtonFormField<String>(
+                  value: selectedReason,
+                  decoration: const InputDecoration(
+                    labelText: 'Cancellation reason',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: cancellationReasons
+                      .map((reason) => DropdownMenuItem<String>(
+                            value: reason,
+                            child: Text(reason),
+                          ))
+                      .toList(),
+                  onChanged: isLoading
+                      ? null
+                      : (reason) => setModalState(() => selectedReason = reason),
+                ),
+                const SizedBox(height: 16),
                 PrimaryButton(
                   label: isLoading ? 'Cancelling...' : 'Confirm Cancel',
                   backgroundColor: TruxifyColors.error,
                   onPressed: isLoading
                       ? null
                       : () async {
+                          if (selectedReason == null) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Please select a cancellation reason')),
+                            );
+                            return;
+                          }
                           setModalState(() => isLoading = true);
                           try {
-                            final resp = await _orderService.cancelOrder(orderDisplayId: widget.orderId);
+                            final resp = await _orderService.cancelOrder(
+                              orderDisplayId: widget.orderId,
+                              reason: selectedReason,
+                            );
                             final rawFee = resp['cancellation_fee'];
                             final feeInRupees = rawFee is num ? rawFee / 100 : 0;
                             await _loadOrder();
@@ -963,7 +997,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
         final isLast = i == timelineData.length - 1;
         
         final color = isCurrent ? TruxifyColors.accent : completed ? TruxifyColors.accentDark : TruxifyColors.border;
-        final timestamp = step['timestamp']?.toString();
+        final timestamp = step['milestone_time']?.toString() ?? step['timestamp']?.toString();
 
         return IntrinsicHeight(
           child: Row(

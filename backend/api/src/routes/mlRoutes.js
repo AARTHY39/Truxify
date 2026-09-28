@@ -60,7 +60,12 @@ router.get(
     const latBucket = lat ? lat.toFixed(4) : '';
     const lngBucket = lng ? lng.toFixed(4) : '';
     const gpsBucket = `${latBucket},${lngBucket}`;
-    return `${tripId}:${gpsBucket}`;
+    const routeDistance = req.query.routeDistance || '10';
+    const timeOfDay = req.query.timeOfDay || '12';
+    const dayOfWeek = req.query.dayOfWeek || '1';
+    const routeType = req.query.routeType || 'highway';
+    const historicalSpeed = req.query.historicalSpeed || '60';
+    return `${tripId}:${gpsBucket}:${routeDistance}:${timeOfDay}:${dayOfWeek}:${routeType}:${historicalSpeed}`;
   }),
   async (req, res) => {
     const { routeDistance, timeOfDay, dayOfWeek, routeType, historicalSpeed } = req.query;
@@ -95,12 +100,16 @@ router.get(
   async (req, res) => {
     const { lat, lng, maxDetour } = req.query;
     try {
-      const currentLat = parseFloat(lat);
-      const currentLng = parseFloat(lng);
+      const currentLat = parseCoord(lat, -90, 90);
+      const currentLng = parseCoord(lng, -180, 180);
       const maxDetourKm = parseFloat(maxDetour || '10');
 
-      if (isNaN(currentLat) || isNaN(currentLng)) {
-        return res.status(400).json({ error: 'Valid lat and lng query parameters are required.' });
+      if (currentLat === null || currentLng === null) {
+        return res.status(400).json({ error: 'Valid lat (-90 to 90) and lng (-180 to 180) query parameters are required.' });
+      }
+
+      if (isNaN(maxDetourKm) || maxDetourKm <= 0 || maxDetourKm > 500) {
+        return res.status(400).json({ error: 'maxDetour must be a positive number between 0.1 and 500 km.' });
       }
 
       // 1. Fetch available load offers

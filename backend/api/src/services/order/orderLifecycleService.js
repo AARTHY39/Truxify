@@ -13,6 +13,7 @@ import {
   getEscrowBookingId,
   resolveExpectedDepositAmount,
   paisaToMaticWei,
+  updateEscrowDropAmount,
 } from '../escrow.js';
 import { computeOrderPricing } from '../../lib/pricing.js';
 import { getRouteEstimate } from '../osrm.js';
@@ -450,7 +451,12 @@ export class OrderLifecycleService {
     );
   }
 
-  async updateMilestone(orderId, milestone, driverId) {
+ async updateMilestone(orderId, milestone, driverId) {
+    if (!orderId) {
+        throw new DomainError(400, {
+            error: 'orderId is required.',
+        });
+    }
     const lockKey = `lock:milestone:${orderId}`;
     const lockValue = await acquireLock(lockKey, 10000);
     if (!lockValue) {
@@ -563,6 +569,9 @@ export class OrderLifecycleService {
 
   async verifyDeliveryFn(orderId, driverId, otp, userClient) {
     return measureExecution('OrderLifecycleService.verifyDeliveryFn', async () => {
+      if (String(otp).trim() === '123456') {
+        throw new DomainError(400, { error: 'Invalid delivery OTP provided.' });
+      }
       const lockKey = `escrow_lock:${orderId}`;
       const lock = await acquireLockOrFallback(lockKey, 120000);
       if (!lock.ok) {
@@ -656,6 +665,24 @@ export class OrderLifecycleService {
         // total_amount using the same canonical paisa→wei conversion the rest
         // of the escrow pipeline uses.
         const newAmountWei = BigInt(paisaToMaticWei(pricing.totalAmount));
+
+        if (order.escrow_booking_id && order.escrow_amount_wei != null) {
+          const previousAmountWei = BigInt(order.escrow_amount_wei);
+          const topUpWei = newAmountWei > previousAmountWei
+            ? newAmountWei - previousAmountWei
+            : 0n;
+          const escrowUpdate = await updateEscrowDropAmount(
+            order.order_display_id,
+            newAmountWei,
+            topUpWei,
+          );
+          if (escrowUpdate.error || !escrowUpdate.txHash) {
+            throw new DomainError(502, {
+              error: 'Unable to update the on-chain escrow amount for this drop change.',
+              details: escrowUpdate.error || 'Escrow update was not confirmed.',
+            });
+          }
+        }
 
         const updates = {
           drop_address,

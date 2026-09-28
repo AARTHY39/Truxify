@@ -1,20 +1,8 @@
-const { createClient } = require('redis');
+import Redis from 'ioredis';
+import { redisClient as sharedRedisClient } from '../config/db.js';
 
 const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
-const redisClient = createClient({ url: redisUrl });
-
-redisClient.on('error', (err) => console.error('Redis Client Error in RateLimiter', err));
-
-const connectRedis = async () => {
-    if (!redisClient.isOpen) {
-        try {
-            await redisClient.connect();
-        } catch (err) {
-            console.error('Failed to connect to Redis for rate limiting:', err.message);
-            throw err;
-        }
-    }
-};
+let redisClient = sharedRedisClient;
 
 const SLIDING_WINDOW_SCRIPT = `
   local key = KEYS[1]
@@ -34,26 +22,20 @@ const SLIDING_WINDOW_SCRIPT = `
   end
 `;
 
-let scriptSha = null;
-
-const loadScript = async () => {
-    await connectRedis();
-    if (!scriptSha) {
-        scriptSha = await redisClient.scriptLoad(SLIDING_WINDOW_SCRIPT);
-    }
-    return scriptSha;
-};
-
 const checkRateLimit = async (key, windowMs, maxRequests) => {
     try {
-        await connectRedis();
-        const sha = await loadScript();
+        const client = redisClient || sharedRedisClient;
+        if (!client || typeof client.eval !== 'function') return true;
         const now = Date.now();
 
-        const result = await redisClient.evalSha(sha, {
-            keys: [key],
-            arguments: [now.toString(), windowMs.toString(), maxRequests.toString()],
-        });
+        const result = await client.eval(
+            SLIDING_WINDOW_SCRIPT,
+            1,
+            key,
+            now.toString(),
+            windowMs.toString(),
+            maxRequests.toString()
+        );
 
         return result === 1;
     } catch (err) {
@@ -62,9 +44,13 @@ const checkRateLimit = async (key, windowMs, maxRequests) => {
     }
 };
 
-module.exports = {
+export {
     checkRateLimit,
     redisClient,
 };
 
-module.exports.default = module.exports;
+export default {
+    checkRateLimit,
+    redisClient,
+};
+

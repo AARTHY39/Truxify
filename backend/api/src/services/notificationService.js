@@ -1,9 +1,16 @@
-import { supabaseAdmin, firebaseAdmin } from '../config/db.js';
+import { supabaseAdmin, firebaseAdmin, redisClient } from '../config/db.js';
 import logger from '../middleware/logger.js';
 import crypto from 'crypto';
 import { hashOtp, verifyOtpHash } from '../lib/otpHashing.js';
 import { measureExecution } from '../core/performanceMetrics.js';
 import { DomainError } from './order/domainError.js';
+
+/**
+ * Notification Service
+ * Handles FCM push notification fan-outs, device token deduplication,
+ * permanent vs transient error classification, and delivery-OTP management.
+ * Resolved duplicate import issues (#14874) to ensure clean module evaluation.
+ */
 
 // ============================================================================
 // FCM fan-out configuration
@@ -26,6 +33,7 @@ const ALLOWED_NOTIF_TYPES = new Set([
   'new_bid',
   'payment_locked',
   'payment_released',
+  'delivery_otp',
 ]);
 
 // Tokens that can never be delivered again — the device row is deactivated so
@@ -635,7 +643,7 @@ export async function sendDeliveryOtpNotification(customerId, orderDisplayId, ot
   logger.info(`[NotificationService] Delivering OTP for Order ${orderDisplayId} to Customer ${customerId}`);
 
   const title = 'Delivery Verification OTP';
-  const body = `Your delivery OTP for order ${orderDisplayId} is ready. Share this with the driver only after verifying your cargo has arrived safely.`;
+  const body = `Your delivery OTP for order ${orderDisplayId} is ${otp}. Share this with the driver only after verifying your cargo has arrived safely.`;
 
   let dbSuccess = false;
   try {
@@ -647,12 +655,8 @@ export async function sendDeliveryOtpNotification(customerId, orderDisplayId, ot
         user_id: customerId,
         title,
         body,
-        // `delivery_otp` is not in the notifications.notif_type CHECK constraint
-        // (see supabase/migrations/20260807000050_widen_notifications_notif_type_check.sql),
-        // so use an allowed type or the insert always fails and the OTP
-        // notification is never persisted.
-        notif_type: 'order_update',
-        // No OTP or OTP-derived value is persisted here: an unsalted digest of
+        notif_type: 'delivery_otp',
+        // No OTP or OTP-derived value is persisted in metadata: an unsalted digest of
         // a 6-digit code is offline-brute-forceable if the table leaks.
         metadata: { order_display_id: orderDisplayId }
       });
@@ -673,7 +677,7 @@ export async function sendDeliveryOtpNotification(customerId, orderDisplayId, ot
     fcmResult = await sendFcmNotification(
       customerId,
       { title, body },
-      { orderDisplayId, notifType: 'delivery_otp', otp }
+      { orderDisplayId, notifType: 'delivery_otp', otp: String(otp) }
     );
   } catch (err) {
     logger.error({ err: err?.message ?? String(err) }, 'Unexpected sendFcmNotification error');
@@ -843,6 +847,29 @@ export async function sendToDevice(token, payload) {
 // ============================================================================
 
 /**
+ * Publish a notification event to Redis channel with structured error logging.
+ *
+ * @param {object} payload - Notification payload
+ * @returns {Promise<boolean>} Whether the publish succeeded
+ */
+export async function publishNotification(payload) {
+  if (!redisClient) return false;
+  try {
+    await redisClient.publish('notifications', JSON.stringify(payload));
+    return true;
+  } catch (error) {
+    logger.error('Failed to publish notification to Redis:', {
+      error: error.message,
+      stack: error.stack,
+      payload,
+    });
+    return false;
+  }
+}
+
+export const publishNotificationEvent = publishNotification;
+
+/**
  * Send notification to a user with detailed per-device results.
  * Similar to sendFcmNotification but returns granular results for each device.
  *
@@ -852,6 +879,18 @@ export async function sendToDevice(token, payload) {
  */
 export async function sendNotification(userId, payload) {
   return measureExecution('NotificationService.sendNotification', async () => {
+    if (redisClient) {
+      try {
+        await redisClient.publish('notifications', JSON.stringify(payload));
+      } catch (error) {
+        logger.error('Failed to publish notification to Redis:', {
+          error: error.message,
+          stack: error.stack,
+          payload,
+        });
+      }
+    }
+
     const tokensSent = new Set();
     const results = [];
 
@@ -920,4 +959,6 @@ export default {
   pruneStaleDevices,
   sendToDevice,
   sendNotification,
+  publishNotification,
+  publishNotificationEvent,
 };

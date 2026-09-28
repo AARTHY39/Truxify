@@ -50,6 +50,7 @@ export function validatePagination(options = {}) {
     }
 
     // Reassign normalized values back to query so downstream controllers see capped values safely
+    offset = Math.max(0, offset);
     req.query.limit = limit;
     req.query.offset = offset;
     

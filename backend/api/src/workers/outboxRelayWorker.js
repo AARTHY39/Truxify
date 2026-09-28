@@ -44,6 +44,15 @@ async function relayOnce() {
         // publishAsync(), publishAndReport awaits adapter delivery and reports
         // whether an adapter actually consumed the event, so we only mark the
         // outbox row published when it truly was delivered (issue #11209).
+        //
+        // emitSafe (called internally by publishAndReport) swallows all
+        // listener errors and returns a bare boolean when no listeners are
+        // registered, so a plain `await eventBus.emitSafe(...)` can never
+        // distinguish a successful publish from a silently-failed one
+        // (issue #13582). publishAndReport therefore always resolves to a
+        // structured outcome object regardless of emitSafe's boolean/Promise
+        // result; the `delivered` gate below is what prevents marking a row
+        // published when no adapter actually consumed the event.
         const baseEvent = new BaseEvent({
           eventType: event.event_type,
           payload: {
@@ -81,26 +90,17 @@ async function relayOnce() {
           const reason = outcome.deduplicated
             ? "Event deduplicated by EventBus"
             : outcome.adapterAttempted === 0
-              ? "No event consumer/adapters handled the event"
-              : `Adapter failures: ${outcome.adapterErrors.join("; ")}`;
-          await outboxService.markFailed(event.event_id, reason);
-          logger.error("[OutboxRelay] Event not delivered, marked failed:", {
-            eventId: event.event_id,
-            reason,
-          });
+              ? 'No event consumer/adapters handled the event'
+              : `Adapter failures: ${outcome.adapterErrors.join('; ')}`;
+          await outboxService.markFailed(event.event_id, _workerId, reason);
+          logger.error('[OutboxRelay] Event not delivered, marked failed:', { eventId: event.event_id, reason });
         }
       } catch (err) {
-        logger.error("[OutboxRelay] Failed to publish event:", {
-          eventId: event.id,
-          err: err.message,
-        });
+        logger.error('[OutboxRelay] Failed to publish event:', { eventId: event.event_id, err: err.message });
         try {
-          await outboxService.markFailed(event.id, err.message);
+          await outboxService.markFailed(event.event_id, _workerId, err.message);
         } catch (markErr) {
-          logger.error("[OutboxRelay] Failed to mark event failed:", {
-            eventId: event.id,
-            err: markErr.message,
-          });
+          logger.error('[OutboxRelay] Failed to mark event failed:', { eventId: event.event_id, err: markErr.message });
         }
       }
     }

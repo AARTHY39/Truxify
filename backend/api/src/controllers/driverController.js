@@ -121,8 +121,17 @@ export const updateDriver = async (req, res) => {
     updated_at: new Date().toISOString(),
   };
 
+  const VALID_HOS_STATUSES = ['off_duty', 'on_duty', 'driving', 'resting'];
+  if (hos_status !== undefined) {
+    if (typeof hos_status !== 'string' || !VALID_HOS_STATUSES.includes(hos_status)) {
+      return res.status(400).json({
+        error: `Invalid hos_status. Must be one of: ${VALID_HOS_STATUSES.join(', ')}`,
+      });
+    }
+    updatePayload.hos_status = hos_status;
+  }
+
   if (typeof is_online === 'boolean') updatePayload.is_online = is_online;
-  if (typeof hos_status === 'string') updatePayload.hos_status = hos_status;
   if (truck_id !== undefined) updatePayload.truck_id = truck_id;
 
   try {

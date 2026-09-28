@@ -72,6 +72,7 @@ import escortWalletRoutes from './routes/escortWalletRoutes.js'
 import carbonTokenRoutes from './routes/carbonTokenRoutes.js'
 import mlRoutes from './routes/mlRoutes.js'
 import tireAnalyticsRoutes from './routes/tireAnalyticsRoutes.js'
+import arLoadingRoutes from './routes/arLoadingRoutes.js'
 
 // ============================================================================
 // 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
@@ -521,6 +522,7 @@ app.use('/api/payments', authenticate, fraudDetectionMiddleware, networkAnalysis
 app.use('/api/driver', deadheadRoutes)
 app.use('/api/orders', trackingRoutes)
 app.use('/api/driver', driverRoutes)
+app.use('/api/drone', droneRoutes)
 // Mounted here, with the other REST routes, so it sits behind the full
 // middleware chain — body parsers, correlation/request IDs, HPP protection,
 // content-type enforcement, fraud detection and the /api rate limiter.
@@ -575,6 +577,7 @@ app.use('/api/oracle', oracleRoutes)
 app.use('/api/carbon-credits', carbonTokenRoutes)
 app.use('/api/ml', mlRoutes)
 app.use('/api/tire-analytics', tireAnalyticsRoutes)
+app.use('/api/ar-loading', arLoadingRoutes)
 
 // ============================================================================
 // 🆕 BLOCKCHAIN MONITORING ROUTES
@@ -612,6 +615,9 @@ app.use('/api/blockchain', (req, _res, next) => {
 //   GET  /api/internal/escrow-velocity
 //   POST /api/internal/pause-escrow
 //   POST /api/internal/defensive-pause
+// Closing the escrow circuit breaker (pause-escrow with {"paused": false}) is
+// additionally gated inside the route on the dedicated ESCROW_OPERATOR_API_KEY
+// (403 for other valid keys; fails closed when unconfigured).
 // ============================================================================
 app.use('/api/internal', requireApiKey, internalRoutes)
 
@@ -936,45 +942,5 @@ process.on('unhandledRejection', async (reason) => {
 
 process.on('SIGTERM', () => shutdown('SIGTERM')) // Docker / Kubernetes stop
 process.on('SIGINT', () => shutdown('SIGINT')) // Ctrl+C in dev
-
-app.use((err, req, res, next) => {
-  if (err?.type === 'entity.too.large') {
-    logger.warn(
-      {
-        requestId: req.requestId,
-        ip: req.ip,
-        method: req.method,
-        path: req.originalUrl,
-      },
-      'Request payload exceeded configured limit'
-    );
-
-    return res.status(413).json({
-      error: 'Payload too large',
-    });
-  }
-
-  if (
-    err instanceof SyntaxError &&
-    err.status === 400 &&
-    'body' in err
-  ) {
-    logger.warn(
-      {
-        requestId: req.requestId,
-        ip: req.ip,
-        method: req.method,
-        path: req.originalUrl,
-      },
-      'Malformed JSON payload received'
-    );
-
-    return res.status(400).json({
-      error: 'Malformed JSON payload',
-    });
-  }
-
-  next(err);
-});
 
 app.use('/api/tolls', tollOptimizationRouter);
