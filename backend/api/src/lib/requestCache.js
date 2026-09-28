@@ -42,7 +42,7 @@ export class RequestCache {
       try {
         this.set(key, value);
       } catch (err) {
-        logger.error({ event: 'REQUEST_CACHE_SET_ERROR', key }, '[RequestCache] setBatch failed for key');
+        logger.error({ event: 'REQUEST_CACHE_SET_ERROR', key, err }, '[RequestCache] setBatch failed for key');
         this._errorCount = (this._errorCount || 0) + 1;
       }
     }
