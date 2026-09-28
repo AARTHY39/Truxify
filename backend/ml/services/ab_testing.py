@@ -120,6 +120,8 @@ class ABTestModel:
                 values for values in results.values()
                 if values.get('production') is not None
                 and values.get('shadow') is not None
+                and pd.notna(values.get('production'))
+                and pd.notna(values.get('shadow'))
             ]
 
             if not comparable_metrics:
@@ -168,7 +170,7 @@ class ABTestModel:
         for metric, values in results.items():
             prod = values.get('production')
             shadow = values.get('shadow')
-            if prod is None or shadow is None:
+            if prod is None or shadow is None or not pd.notna(prod) or not pd.notna(shadow):
                 continue
 
             total_metrics += 1
@@ -213,8 +215,16 @@ class ABTestModel:
         """Auto-rollback to previous version if shadow model underperforms"""
         evaluation = self.evaluate_test(test_id)
 
+        if evaluation.get('error'):
+            return {
+                'action': 'none',
+                'test_id': test_id,
+                'reason': evaluation['error'],
+                'timestamp': datetime.utcnow().isoformat()
+            }
+
         if evaluation.get('should_rollback', False):
-            logger.warning(f"⚠️ Rollback triggered for test {test_id}")
+            logger.warning(f"âš ï¸ Rollback triggered for test {test_id}")
             return {
                 'action': 'rollback',
                 'test_id': test_id,
@@ -223,9 +233,3 @@ class ABTestModel:
                 'previous_version': 'production',
                 'timestamp': datetime.utcnow().isoformat()
             }
-        return {
-            'action': 'promote',
-            'test_id': test_id,
-            'reason': 'Shadow model performed well',
-            'timestamp': datetime.utcnow().isoformat()
-        }

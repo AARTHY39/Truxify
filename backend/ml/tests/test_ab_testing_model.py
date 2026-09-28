@@ -100,7 +100,22 @@ class TestEvaluateTest:
 
         assert result["should_rollback"] is False
         assert result["error"] == "Insufficient metrics for production vs shadow comparison"
+    def test_trigger_rollback_does_not_promote_without_shadow_metrics(self, tmp_path):
+        """Missing shadow metrics must not result in a promote action."""
+        db_path = tmp_path / "ab_test.db"
+        model = ABTestModel(f"sqlite:///{db_path}")
 
+        model.log_metrics(
+            test_id="test_rollback",
+            model_version="production",
+            metrics={"accuracy": 0.90},
+            request_id="request_1"
+        )
+
+        result = model.trigger_rollback("test_rollback")
+
+        assert result["action"] == "none"
+        assert result["reason"] == "Insufficient metrics for production vs shadow comparison"
     def test_uses_real_shadow_version(self, tmp_path):
         """Evaluation must use the actual logged shadow model version."""
         db_path = tmp_path / "ab_test.db"
