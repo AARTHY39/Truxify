@@ -223,13 +223,42 @@ class ABTestModel:
                 'timestamp': datetime.utcnow().isoformat()
             }
 
-        if evaluation.get('should_rollback', False):
-            logger.warning(f"âš ï¸ Rollback triggered for test {test_id}")
+        if not evaluation.get('has_comparison', False):
             return {
-                'action': 'rollback',
+                'action': 'insufficient_metrics',
                 'test_id': test_id,
-                'reason': 'Shadow model underperformed',
-                'production_version': 'production',
-                'previous_version': 'production',
+                'reason': 'Production and shadow metrics are not comparable',
                 'timestamp': datetime.utcnow().isoformat()
             }
+
+        if evaluation.get('should_rollback', False):
+            restored = restore_previous_model(DEMAND_MODEL_NAME)
+            if restored:
+                reset_model_cache()
+            state = self._test_states.setdefault(test_id, {'test_id': test_id})
+            state.update({
+                'status': 'rolled_back' if restored else 'rollback_failed',
+                'rolled_back': restored,
+                'production_version': self.get_production_version(),
+            })
+            self.mark_test_terminal(test_id, state['status'])
+            logger.warning(
+                "Demand forecast rollback %s for test %s",
+                "completed" if restored else "failed",
+                test_id
+            )
+            return {
+                'action': 'rollback' if restored else 'rollback_failed',
+                'test_id': test_id,
+                'reason': 'Shadow model underperformed',
+                'rolled_back': restored,
+                'production_version': self.get_production_version(),
+                'timestamp': datetime.utcnow().isoformat()
+            }
+
+        return {
+            'action': 'promote',
+            'test_id': test_id,
+            'reason': 'Shadow model performed well',
+            'timestamp': datetime.utcnow().isoformat()
+        }
