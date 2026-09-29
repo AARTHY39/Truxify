@@ -74,7 +74,7 @@ function makeTelemetry(lat, lng, ageMs = 1000, overrides = {}) {
   return {
     driver_id: "driver-1",
     order_id: "order-geo-1",
-    order_display_id: overrides.order_display_id || "ORD-GEO", // Matches makeOrder()
+    order_display_id: overrides.order_display_id || "ORD-GEO",
     lat,
     lng,
     server_received_at: new Date(Date.now() - ageMs),
@@ -383,7 +383,7 @@ describe("DeliveryVerificationService.verifyDelivery geofence gating", () => {
           .fn()
           .mockResolvedValueOnce({
             data: makeOrder({
-              total_amount: 400000, // different from escrow portion
+              total_amount: 400000,
               escrow_amount_wei: "1500000000000000000",
             }),
             error: null,
@@ -426,7 +426,18 @@ describe("DeliveryVerificationService.verifyDelivery geofence gating", () => {
   it("applies geofence check on stuck-escrow retry path and fails with 503 when telemetry DB is unavailable", async () => {
     h.mockMongoDb = null;
     const escrowReleaseFn = vi.fn().mockResolvedValue({ txHash: "0xrelease" });
-    const { service } = makeService({ escrowReleaseFn });
+    const { service } = makeService({
+      escrowReleaseFn,
+      repoOverrides: {
+        findOrderById: vi.fn().mockResolvedValueOnce({
+          data: makeOrder({
+            status: "payment_released",
+            escrow_status: "funded",
+          }),
+          error: null,
+        }),
+      },
+    });
 
     const err = await captureDomainError(
       service.verifyDelivery({
