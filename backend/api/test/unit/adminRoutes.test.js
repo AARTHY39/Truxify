@@ -23,6 +23,7 @@ vi.mock('../../src/middleware/rateLimiter.js', () => ({
   userLimiter: (_req, _res, next) => next(),
   safeIpKeyGenerator: () => 'test-ip',
   createStore: vi.fn(() => ({})),
+  nearbyLimiter: (_req, _res, next) => next(),
 }));
 
 const { mockSupabase } = vi.hoisted(() => ({
@@ -35,6 +36,7 @@ vi.mock('../../src/config/db.js', () => ({
   upstashRedisClient: global.mockRedis,
   get supabase() { return mockSupabase; },
   supabaseAdmin: undefined,
+  getAdminClient: () => mockSupabase,
 }));
 
 vi.mock('../../src/middleware/logger.js', () => ({
