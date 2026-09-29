@@ -1,4 +1,5 @@
 import wimBypassRouter from './routes/wimBypass.js';
+import iftaTaxRouter from './routes/iftaTax.js';
 import express from 'express'
 import { corsMiddleware } from './middleware/cors.js'
 import { compressionMiddleware } from './config/compression.js'
@@ -62,6 +63,7 @@ import webhookRoutes from './routes/webhookRoutes.js'
 import auditRoutes from './routes/auditRoutes.js'
 import droneRoutes from './routes/droneRoutes.js'
 import paymentRoutes from './routes/paymentRoutes.js'
+import lumperEscrowRoutes from './routes/lumperEscrowRoutes.js'
 import tollOptimizationRouter from './routes/tollOptimization.js'
 import userRoutes from './routes/userRoutes.js'
 import voiceRoutes from './routes/voiceRoutes.js'
@@ -509,13 +511,14 @@ app.use('/api/health', healthRoutes)
 app.use('/api/v1/health', healthLimiter)
 app.use('/api/v1/health', healthRoutes)
 app.use('/api/', globalLimiter)
-app.use('/api/v1/trips', authenticate, fraudDetectionMiddleware, networkAnalysisMiddleware, tripRoutes)
-app.use('/api/trips', tripRoutes)
 // ============================================================================
 // REQUEST-SCOPED CACHE — created per-request, destroyed after response.
 // Registers before all routes so every request handler benefits.
 // ============================================================================
 app.use('/api', requestCacheMiddleware)
+
+app.use('/api/v1/trips', authenticate, fraudDetectionMiddleware, networkAnalysisMiddleware, tripRoutes)
+app.use('/api/trips', tripRoutes)
 
 // ============================================================================
 // REST API ROUTING
@@ -525,6 +528,10 @@ app.use('/api/orders', authenticate, fraudDetectionMiddleware, networkAnalysisMi
 // long-haul loads. Sits behind authenticate + per-route policy checks.
 app.use('/api/cross-dock', authenticate, fraudDetectionMiddleware, networkAnalysisMiddleware, crossDockRoutes)
 app.use('/api/payments', authenticate, fraudDetectionMiddleware, networkAnalysisMiddleware, paymentRoutes)
+// Lumper fee escrow (broker deposit / driver receipt release). The router
+// already applies `authenticate` + `userLimiter` on each of its own routes,
+// so no additional middleware is layered on here.
+app.use('/api/lumper-escrow', lumperEscrowRoutes)
 app.use('/api/driver', deadheadRoutes)
 app.use('/api/orders', trackingRoutes)
 app.use('/api/driver', driverRoutes)
@@ -544,7 +551,6 @@ app.use('/api/users', userRoutes)
 app.use('/api/devices', deviceRoutes)
 app.use('/api/driver/documents', documentRoutes)
 app.use('/api/maintenance', maintenancePhotoRoutes)
-app.use('/api/webhooks', webhookRoutes)
 app.use('/api/trucks', truckRoutes)
 app.use('/api/v1', lookupRoutes)
 app.use('/api/public', publicTrackingRoutes)
@@ -557,6 +563,7 @@ app.use('/api/v1/voice', voiceAssistantRoutes)
 app.use('/api/demand-heatmap', demandRoutes)
 app.use('/api/road-conditions', roadConditionRoutes)
 app.use('/api/escorts/wallet', escortWalletRoutes)
+app.use('/api/tolls', tollOptimizationRouter)
 
 // ============================================================================
 // 🆕 WEB3 SUBSYSTEM ROUTES
@@ -681,6 +688,7 @@ app.use('/api', wasmRoutes)
 app.use('/api', snykRoutes)
 app.use('/api', liquibaseRoutes)
 app.use('/api/wim', wimBypassRouter)
+app.use('/api/ifta-tax', iftaTaxRouter)
 
 // 🆕 WebRTC Health Check Endpoint
 app.get('/api/webrtc/status', (req, res) => {
@@ -962,14 +970,42 @@ app.use('/api/analytics', analyticsRoutes);
 process.on('SIGTERM', () => shutdown('SIGTERM')) // Docker / Kubernetes stop 
 process.on('SIGINT', () => shutdown('SIGINT')) // Ctrl+C in dev
 
-app.use('/api/tolls', tollOptimizationRouter); 
+app.use((err, req, res, next) => {
+  if (err?.type === 'entity.too.large') {
+    logger.warn(
+      {
+        requestId: req.requestId,
+        ip: req.ip,
+        method: req.method,
+        path: req.originalUrl,
+      },
+      'Request payload exceeded configured limit'
+    );
 
-// Start the audit log flush timer on server boot
-startAuditFlushTimer();
+    return res.status(413).json({
+      error: 'Payload too large',
+    });
+  }
 
-// Mount audit routes (admin only)
-app.use('/api/audit', auditRoutes);
+  if (
+    err instanceof SyntaxError &&
+    err.status === 400 &&
+    'body' in err
+  ) {
+    logger.warn(
+      {
+        requestId: req.requestId,
+        ip: req.ip,
+        method: req.method,
+        path: req.originalUrl,
+      },
+      'Malformed JSON payload received'
+    );
 
-// Global error audit logger (must be after routes, before error handler)
-app.use(auditErrors);
+    return res.status(400).json({
+      error: 'Malformed JSON payload',
+    });
+  }
 
+  next(err);
+});
