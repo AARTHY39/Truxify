@@ -16,6 +16,8 @@ import logger from '../middleware/logger.js';
 let redisClient = null;
 let initialized = false;
 
+const inFlight = new Map();
+
 const stats = {
   hits: 0,
   misses: 0,
@@ -80,46 +82,33 @@ export async function set(namespace, entityId, value, opts = {}) {
   }
 }
 
-/**
- * Executes fetcherFn with Singleflight request coalescing to prevent Cache Stampedes.
- * Concurrent requests for the same key await the single in-flight database query.
- *
- * @param {string} namespace Cache namespace
- * @param {string} entityId Entity ID
- * @param {Function} fetcherFn Async function to fetch data on cache miss
- * @param {Object} [opts] Options (subKey, ttl)
- * @returns {Promise<any>}
- */
-export async function getOrSetSingleflight(namespace, entityId, fetcherFn, opts = {}) {
+export async function getOrSetSingleflight(namespace, entityId, fetcher, opts = {}) {
   const key = CacheKeyBuilder.build(namespace, entityId, opts.subKey);
 
-  // 1. Check cache first
   const cached = await get(namespace, entityId, opts.subKey);
   if (cached !== null) {
     return cached;
   }
 
-  // 2. Check if a database fetch for this key is already in-flight
-  if (inFlightSingleflightGroup.has(key)) {
+  if (inFlight.has(key)) {
     stats.coalesced++;
-    return await inFlightSingleflightGroup.get(key);
+    return inFlight.get(key);
   }
 
-  // 3. Initiate singleflight execution
-  const fetchPromise = (async () => {
-    try {
-      const data = await fetcherFn();
+  const promise = Promise.resolve()
+    .then(fetcher)
+    .then(async (data) => {
       if (data !== undefined && data !== null) {
         await set(namespace, entityId, data, opts);
       }
       return data;
-    } finally {
-      inFlightSingleflightGroup.delete(key);
-    }
-  })();
+    })
+    .finally(() => {
+      inFlight.delete(key);
+    });
 
-  inFlightSingleflightGroup.set(key, fetchPromise);
-  return await fetchPromise;
+  inFlight.set(key, promise);
+  return promise;
 }
 
 export async function invalidate(namespace, entityId, opts = {}) {

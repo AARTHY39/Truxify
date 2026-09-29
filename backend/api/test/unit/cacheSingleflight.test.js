@@ -39,4 +39,48 @@ describe('CacheManager Singleflight Unit Tests', () => {
     const stats = getStats();
     expect(stats.cache.coalesced).toBe(4);
   });
+
+  it('should correctly propagate errors and clean up the in-flight map if fetcher rejects', async () => {
+    const errorFetcher = vi.fn().mockRejectedValue(new Error('Database timeout'));
+
+    const promises = Array.from({ length: 5 }, () =>
+      getOrSetSingleflight('orders', 'err-123', errorFetcher).catch(err => err.message)
+    );
+
+    const results = await Promise.all(promises);
+
+    results.forEach((res) => {
+      expect(res).toBe('Database timeout');
+    });
+
+    expect(errorFetcher).toHaveBeenCalledTimes(1);
+    expect(getStats().cache.coalesced).toBe(4);
+
+    // Subsequent calls should re-trigger since map was cleaned up
+    await getOrSetSingleflight('orders', 'err-123', errorFetcher).catch(() => {});
+    expect(errorFetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('should correctly propagate errors and clean up the in-flight map if fetcher throws synchronously', async () => {
+    const syncErrorFetcher = vi.fn().mockImplementation(() => {
+      throw new Error('Synchronous error');
+    });
+
+    const promises = Array.from({ length: 3 }, () =>
+      getOrSetSingleflight('orders', 'sync-err', syncErrorFetcher).catch(err => err.message)
+    );
+
+    const results = await Promise.all(promises);
+
+    results.forEach((res) => {
+      expect(res).toBe('Synchronous error');
+    });
+
+    expect(syncErrorFetcher).toHaveBeenCalledTimes(1);
+    expect(getStats().cache.coalesced).toBe(2);
+
+    // Subsequent calls should re-trigger
+    await getOrSetSingleflight('orders', 'sync-err', syncErrorFetcher).catch(() => {});
+    expect(syncErrorFetcher).toHaveBeenCalledTimes(2);
+  });
 });
