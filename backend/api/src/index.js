@@ -544,7 +544,6 @@ app.use('/api/users', userRoutes)
 app.use('/api/devices', deviceRoutes)
 app.use('/api/driver/documents', documentRoutes)
 app.use('/api/maintenance', maintenancePhotoRoutes)
-app.use('/api/webhooks', webhookRoutes)
 app.use('/api/trucks', truckRoutes)
 app.use('/api/v1', lookupRoutes)
 app.use('/api/public', publicTrackingRoutes)
@@ -557,6 +556,7 @@ app.use('/api/v1/voice', voiceAssistantRoutes)
 app.use('/api/demand-heatmap', demandRoutes)
 app.use('/api/road-conditions', roadConditionRoutes)
 app.use('/api/escorts/wallet', escortWalletRoutes)
+app.use('/api/tolls', tollOptimizationRouter)
 
 // ============================================================================
 // 🆕 WEB3 SUBSYSTEM ROUTES
@@ -962,14 +962,42 @@ app.use('/api/analytics', analyticsRoutes);
 process.on('SIGTERM', () => shutdown('SIGTERM')) // Docker / Kubernetes stop 
 process.on('SIGINT', () => shutdown('SIGINT')) // Ctrl+C in dev
 
-app.use('/api/tolls', tollOptimizationRouter); 
+app.use((err, req, res, next) => {
+  if (err?.type === 'entity.too.large') {
+    logger.warn(
+      {
+        requestId: req.requestId,
+        ip: req.ip,
+        method: req.method,
+        path: req.originalUrl,
+      },
+      'Request payload exceeded configured limit'
+    );
 
-// Start the audit log flush timer on server boot
-startAuditFlushTimer();
+    return res.status(413).json({
+      error: 'Payload too large',
+    });
+  }
 
-// Mount audit routes (admin only)
-app.use('/api/audit', auditRoutes);
+  if (
+    err instanceof SyntaxError &&
+    err.status === 400 &&
+    'body' in err
+  ) {
+    logger.warn(
+      {
+        requestId: req.requestId,
+        ip: req.ip,
+        method: req.method,
+        path: req.originalUrl,
+      },
+      'Malformed JSON payload received'
+    );
 
-// Global error audit logger (must be after routes, before error handler)
-app.use(auditErrors);
+    return res.status(400).json({
+      error: 'Malformed JSON payload',
+    });
+  }
 
+  next(err);
+});
