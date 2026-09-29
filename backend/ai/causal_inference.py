@@ -50,18 +50,16 @@ class CausalDiscovery:
             return nx.DiGraph()
     
     def identify_causes(self, target_variable: str) -> List[str]:
-        """Identify direct causes of target variable"""
-        causes = []
-        for node in self.causal_graph.predecessors(target_variable):
-            causes.append(node)
-        return causes
+        """Identify direct causes of target variable."""
+        if target_variable not in self.causal_graph:
+            return []
+        return list(self.causal_graph.predecessors(target_variable))
     
     def identify_effects(self, source_variable: str) -> List[str]:
-        """Identify direct effects of source variable"""
-        effects = []
-        for node in self.causal_graph.successors(source_variable):
-            effects.append(node)
-        return effects
+        """Identify direct effects of source variable."""
+        if source_variable not in self.causal_graph:
+            return []
+        return list(self.causal_graph.successors(source_variable))
     
     def get_causal_paths(self, source: str, target: str) -> List[List[str]]:
         """Find all causal paths from source to target"""
@@ -299,7 +297,15 @@ class BottleneckAnalyzer:
         root_causes = []
         
         # Find all ancestors in causal graph
-        target = bottleneck['metric']
+        target = bottleneck.get('metric')
+        if target is None:
+            logger.warning("Cannot find root causes: bottleneck has no 'metric' value")
+            return []
+
+        if target not in causal_graph:
+            self.root_causes[target] = []
+            return []
+
         ancestors = nx.ancestors(causal_graph, target)
         
         for ancestor in ancestors:
