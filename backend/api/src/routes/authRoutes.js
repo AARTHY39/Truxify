@@ -364,48 +364,86 @@ const JWT_SECRET = process.env.JWT_SECRET || 'truxify-jwt-secret-key';
  * /api/auth/verify:
  *   post:
  *     tags: [Authentication]
- *     summary: Exchange Firebase/Supabase ID Token for Backend JWT
- *     description: Verifies Firebase or Supabase ID token and returns a signed backend JWT token.
+ *     summary: Exchange Firebase ID Token for Backend JWT
+ *     description: >-
+ *       Verifies a Firebase ID token and returns a signed backend JWT. The
+ *       caller must present a verifiable idToken; the role is read from the
+ *       stored profile, never from the request body.
  *     responses:
  *       200:
  *         description: JWT exchanged successfully
- *       400:
- *         description: Missing token or email
+ *       401:
+ *         description: Missing, invalid, or expired idToken
+ *       503:
+ *         description: Token verification is unavailable
  */
 router.post("/verify", async (req, res) => {
   try {
-    const { idToken, token, email, role, phone, uid } = req.body || {};
+    // `role` and `uid` are deliberately NOT read from the request body. The
+    // role is derived from the verified token and the stored profile only.
+    // Reading it from the body let any caller mint a 7-day admin JWT.
+    const { idToken, token } = req.body || {};
     const inputToken = idToken || token;
 
-    if (!inputToken && !email) {
-      return res.status(400).json({
+    if (!inputToken) {
+      return res.status(401).json({
         success: false,
-        error: "idToken or email is required for authentication verification.",
+        error: "An idToken is required for authentication verification.",
       });
     }
 
-    let verifiedUid = uid || `uid-${Date.now()}`;
-    let verifiedEmail = email || "user@truxify.com";
-    let verifiedRole = role || "customer";
-
-    if (inputToken && firebaseAdmin) {
-      try {
-        const decoded = await firebaseAdmin.auth().verifyIdToken(inputToken);
-        verifiedUid = decoded.uid || verifiedUid;
-        verifiedEmail = decoded.email || verifiedEmail;
-      } catch (err) {
-        logger.warn(`[auth/verify] Firebase token verification failed: ${err.message}`);
-      }
+    // Fail closed. Without a verifier there is no authenticated principal, so
+    // this must not fall through to signing a token from request data.
+    if (!firebaseAdmin) {
+      logger.error("[auth/verify] Firebase Admin is unavailable; refusing to issue a token.");
+      return res.status(503).json({
+        success: false,
+        error: "Token verification is temporarily unavailable.",
+      });
     }
 
+    let decoded;
+    try {
+      decoded = await firebaseAdmin.auth().verifyIdToken(inputToken);
+    } catch (err) {
+      // Previously this was only logged and then execution continued, signing a
+      // backend JWT from unverified request data.
+      logger.warn(`[auth/verify] Firebase token verification failed: ${err.message}`);
+      return res.status(401).json({
+        success: false,
+        error: "Invalid or expired idToken.",
+      });
+    }
+
+    const verifiedUid = decoded?.uid;
+    if (!verifiedUid) {
+      return res.status(401).json({
+        success: false,
+        error: "Invalid or expired idToken.",
+      });
+    }
+
+    const verifiedEmail = decoded.email || null;
+
     let userId = `usr-${verifiedUid.slice(-8)}`;
+    // Lowest privilege by default. It is only ever raised by a stored profile,
+    // never by request data.
+    let verifiedRole = "customer";
     if (supabase) {
       try {
-        const { data: profile } = await supabase
+        // Both values now come from the verified token rather than the request,
+        // so the PostgREST filter is no longer attacker-shaped. The email branch
+        // is skipped entirely when the token carries no email, because
+        // `email.eq.null` would silently match nothing.
+        let query = supabase
           .from("profiles")
-          .select("id, role, full_name, phone")
-          .or(`firebase_uid.eq.${verifiedUid},email.eq.${verifiedEmail}`)
-          .maybeSingle();
+          .select("id, role, full_name, phone");
+
+        query = verifiedEmail
+          ? query.or(`firebase_uid.eq.${verifiedUid},email.eq.${verifiedEmail}`)
+          : query.eq("firebase_uid", verifiedUid);
+
+        const { data: profile } = await query.maybeSingle();
 
         if (profile) {
           userId = profile.id;
