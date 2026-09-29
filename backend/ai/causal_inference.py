@@ -7,11 +7,7 @@ from typing import Dict, List, Tuple, Any, Optional
 import networkx as nx
 import logging
 from datetime import datetime
-import matplotlib.pyplot as plt
-from causalnex.structure import StructureModel
 from causalnex.structure.notears import from_pandas
-from causalnex.inference import InferenceEngine
-from causalnex.evaluation import evaluation
 from dowhy import CausalModel
 import warnings
 warnings.filterwarnings('ignore')
@@ -123,8 +119,10 @@ class DoCalculus:
 
         return "digraph {\n" + "\n".join(lines) + "\n}"
     
-    def estimate_ate(self, treatment: str, outcome: str) -> Dict:
-        """Estimate Average Treatment Effect"""
+        def estimate_ate(self, treatment: str, outcome: str) -> Dict:
+        """Estimate the Average Treatment Effect (ATE) using backdoor
+        propensity score weighting, based on the graph built in
+        set_causal_model."""
         try:
             identified_estimand = self.causal_model.identify_effect()
             estimate = self.causal_model.estimate_effect(
@@ -302,10 +300,11 @@ class BottleneckAnalyzer:
         target = bottleneck['metric']
         ancestors = nx.ancestors(causal_graph, target)
         
+        direct_causes = set(causal_graph.predecessors(target))
         for ancestor in ancestors:
             root_causes.append({
                 'cause': ancestor,
-                'type': 'direct' if ancestor in causal_graph.predecessors(target) else 'indirect',
+                'type': 'direct' if ancestor in direct_causes else 'indirect',
                 'path_length': len(nx.shortest_path(causal_graph, ancestor, target)) if nx.has_path(causal_graph, ancestor, target) else 0
             })
         
