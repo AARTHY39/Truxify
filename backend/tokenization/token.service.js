@@ -56,10 +56,6 @@ export function extractEventArg(receipt, contract, eventName, argIndex = 0) {
 
 class TokenizationService {
     constructor() {
-        this.provider = new ethers.JsonRpcProvider(process.env.POLYGON_RPC_URL);
-        this.wallet = new ethers.Wallet(process.env.PRIVATE_KEY, this.provider);
-        this.tokenAddress = process.env.ASSET_TOKEN_ADDRESS;
-
         this.tokenABI = [
             'function createAsset(string memory name, string memory description, string memory assetType, uint256 totalValue, uint256 totalTokens, string memory metadataURI) external returns (uint256)',
             'function purchaseFraction(uint256 assetId, uint256 amount) external payable',
@@ -76,9 +72,27 @@ class TokenizationService {
             'event TradeOrderCreated(uint256 indexed orderId, uint256 tokenId, address indexed seller)'
         ];
 
+        if (!process.env.POLYGON_RPC_URL || !process.env.PRIVATE_KEY || !process.env.ASSET_TOKEN_ADDRESS) {
+            logger.warn('TokenizationService disabled: POLYGON_RPC_URL, PRIVATE_KEY, or ASSET_TOKEN_ADDRESS not set.');
+            this.provider = null;
+            this.wallet = null;
+            this.tokenAddress = null;
+            this.token = null;
+            return;
+        }
+
+        this.tokenAddress = process.env.ASSET_TOKEN_ADDRESS;
+        this.provider = new ethers.JsonRpcProvider(process.env.POLYGON_RPC_URL);
+        this.wallet = new ethers.Wallet(process.env.PRIVATE_KEY, this.provider);
         this.token = new ethers.Contract(this.tokenAddress, this.tokenABI, this.wallet);
 
         logger.info('✅ Tokenization Service initialized');
+    }
+
+    _requireConfigured() {
+        if (!this.token || !this.wallet || !this.provider || !this.tokenAddress) {
+            throw new Error('TokenizationService is disabled: missing required environment variables');
+        }
     }
 
     /**
@@ -96,6 +110,7 @@ class TokenizationService {
      * @returns {ethers.Wallet} the relayer signer
      */
     getRelayerSigner(verifiedAddress) {
+        this._requireConfigured();
         if (!verifiedAddress || !ethers.isAddress(verifiedAddress)) {
             throw new Error('Cannot obtain a relayer signer without a verified user address.');
         }
@@ -106,6 +121,7 @@ class TokenizationService {
 
     async createAsset(assetData) {
         try {
+            this._requireConfigured();
             const tx = await this.token.createAsset(
                 assetData.name,
                 assetData.description,
@@ -143,6 +159,7 @@ class TokenizationService {
 
     async purchaseFraction(assetId, amount, userAddress, signer) {
         try {
+            this._requireConfigured();
             const asset = await this.getAsset(assetId);
             if (!asset) {
                 throw new Error('Asset not found');
@@ -188,6 +205,7 @@ class TokenizationService {
 
     async sellFraction(assetId, amount, userAddress, signer) {
         try {
+            this._requireConfigured();
             if (!signer) {
                 throw new Error('A verified user signer is required to sell fractions.');
             }
@@ -224,6 +242,7 @@ class TokenizationService {
 
     async createTradeOrder(assetId, amount, price, orderType, userAddress) {
         try {
+            this._requireConfigured();
             const tx = await this.token.createTradeOrder(
                 assetId,
                 ethers.parseEther(amount.toString()),
@@ -263,6 +282,7 @@ class TokenizationService {
 
     async getTradeOrder(assetId, orderIndex) {
         try {
+            this._requireConfigured();
             const orders = await this.token.getTradeOrders(assetId);
 
             if (orderIndex < 0 || orderIndex >= orders.length) {
@@ -287,6 +307,7 @@ class TokenizationService {
 
     async executeTradeOrder(assetId, orderIndex, buyerAddress, signer) {
         try {
+            this._requireConfigured();
             const order = await this.getTradeOrder(assetId, orderIndex);
 
             if (!order.isActive) {
@@ -334,6 +355,7 @@ class TokenizationService {
     // ============ View Functions ============
 
     async getAsset(assetId) {
+        this._requireConfigured();
         try {
             const asset = await this.token.getAsset(assetId);
             return {
@@ -358,6 +380,7 @@ class TokenizationService {
     }
 
     async getFractionalOwnership(assetId, userAddress) {
+        this._requireConfigured();
         try {
             const ownership = await this.token.getFractionalOwnership(assetId, userAddress);
             return {
@@ -374,6 +397,7 @@ class TokenizationService {
     }
 
     async getStats() {
+        this._requireConfigured();
         try {
             const totalAssets = await this.token.getTotalAssets();
             const totalOrders = await this.token.getTotalTradeOrders();
@@ -403,6 +427,7 @@ class TokenizationService {
     // ============ Database Operations ============
 
     _extractIdFromLogs(receipt, eventName, idFieldName) {
+        this._requireConfigured();
         const tokenAddress = this.tokenAddress.toLowerCase();
         for (const log of receipt.logs) {
             if (log.address && log.address.toLowerCase() !== tokenAddress) continue;
@@ -469,4 +494,5 @@ class TokenizationService {
     }
 }
 
+export { TokenizationService };
 export default new TokenizationService();
