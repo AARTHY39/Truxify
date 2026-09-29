@@ -13,6 +13,7 @@ vi.mock('../../src/config/db.js', () => ({
   upstashRedisClient: global.mockRedis,
   supabaseAdmin: adminDbMock,
   supabase: adminDbMock,
+  getAdminClient: () => adminDbMock,
 }));
 
 vi.mock('../../src/middleware/auth.js', () => ({
