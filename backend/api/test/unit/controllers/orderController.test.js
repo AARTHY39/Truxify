@@ -48,6 +48,7 @@ vi.mock('../../../src/services/order/orderValidationService.js', () => ({
 vi.mock('../../../src/services/escrow.js', () => ({
   buildDepositTx: vi.fn(),
   recordDepositTx: vi.fn(),
+  submitEscrowRefund: vi.fn(),
   escrowRefund: vi.fn(),
 }));
 
