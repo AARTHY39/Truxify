@@ -1,4 +1,5 @@
 import wimBypassRouter from './routes/wimBypass.js';
+import iftaTaxRouter from './routes/iftaTax.js';
 import express from 'express'
 import { corsMiddleware } from './middleware/cors.js'
 import { compressionMiddleware } from './config/compression.js'
@@ -687,6 +688,7 @@ app.use('/api', wasmRoutes)
 app.use('/api', snykRoutes)
 app.use('/api', liquibaseRoutes)
 app.use('/api/wim', wimBypassRouter)
+app.use('/api/ifta-tax', iftaTaxRouter)
 
 // 🆕 WebRTC Health Check Endpoint
 app.get('/api/webrtc/status', (req, res) => {
