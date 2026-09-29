@@ -53,11 +53,12 @@ describe('wimBypass service', () => {
     });
 
     it('is deterministic for the same payload within the same timestamp', () => {
-      const a = createSignedWimPacket(credentialFor('t1'));
-      const b = createSignedWimPacket(credentialFor('t1'));
-      // Timestamps differ, so signatures differ unless payload identical
-      expect(a.packet.timestamp).toBeTypeOf('number');
-      expect(b.signature).toMatch(/^[a-f0-9]{64}$/);
+      const credential = credentialFor('t1');
+      const a = createSignedWimPacket(credential);
+      const b = createSignedWimPacket(credential);
+
+      expect(a.packet).toEqual(b.packet);
+      expect(a.signature).toBe(b.signature);
     });
   });
 });

@@ -379,8 +379,7 @@ export async function storeWimCredential(credential) {
  */
 export async function consumeWimCredential(credentialId) {
   if (!supabaseAdmin) {
-    logger.warn('[WIM] consumeWimCredential skipped: database not configured');
-    return null;
+    throw new Error('Database is not configured for WIM credential consumption.');
   }
 
   const now = new Date().toISOString();
@@ -394,7 +393,12 @@ export async function consumeWimCredential(credentialId) {
     .select('id')
     .maybeSingle();
 
-  if (error || !data) {
+  if (error) {
+    logger.error({ err: error }, '[WIM] Failed to consume bypass credential');
+    throw new Error('Failed to consume bypass credential.');
+  }
+
+  if (!data) {
     return null;
   }
 
