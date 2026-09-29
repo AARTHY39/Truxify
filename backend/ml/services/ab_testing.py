@@ -1,4 +1,5 @@
 import random
+import math
 import logging
 from datetime import datetime
 from typing import Dict, Any, Optional
@@ -148,6 +149,8 @@ class ABTestModel:
                 and values.get('shadow') is not None
                 and pd.notna(values.get('production'))
                 and pd.notna(values.get('shadow'))
+                and math.isfinite(values.get('production'))
+                and math.isfinite(values.get('shadow'))
             ]
 
             if not comparable_metrics:
@@ -160,12 +163,10 @@ class ABTestModel:
                     'timestamp': datetime.utcnow().isoformat()
                 }
 
-            is_better = self.is_shadow_better(results)
-            has_comparison = any(
-                values.get('production') is not None and values.get('shadow') is not None
-                for values in results.values()
-            )
+           is_better = self.is_shadow_better(results)
 
+            has_comparison = len(comparable_metrics) > 0
+            
             return {
                 'test_id': test_id,
                 'results': results,
