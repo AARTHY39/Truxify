@@ -238,6 +238,63 @@ describe("DeliveryVerificationService.assertDriverAtDropoff", () => {
       service.assertDriverAtDropoff(makeOrder()),
     ).resolves.toBeUndefined();
   });
+
+  describe("geofence radius validation (issue #6966)", () => {
+    const OUTSIDE_DEFAULT_INSIDE_1000 = 77.217; // ~780m away from drop_lng 77.209
+
+    it("uses the supplied valid positive radius", async () => {
+      mockTelemetryRecords = [makeTelemetry(28.6139, OUTSIDE_DEFAULT_INSIDE_1000)];
+      const { service } = makeService();
+      // Should pass because 780m < 1000m
+      await expect(
+        service.assertDriverAtDropoff(makeOrder(), 1000)
+      ).resolves.toBeUndefined();
+    });
+
+    it("falls back to default radius when radiusM is NaN", async () => {
+      mockTelemetryRecords = [makeTelemetry(28.6139, OUTSIDE_DEFAULT_INSIDE_1000)];
+      const { service } = makeService();
+      const err = await captureDomainError(
+        service.assertDriverAtDropoff(makeOrder(), NaN)
+      );
+      expect(err).toBeInstanceOf(DomainError);
+      expect(err.status).toBe(409);
+      expect(err.payload.error).toMatch(/must be within 500m/i);
+    });
+
+    it("falls back to default radius when radiusM is 0", async () => {
+      mockTelemetryRecords = [makeTelemetry(28.6139, OUTSIDE_DEFAULT_INSIDE_1000)];
+      const { service } = makeService();
+      const err = await captureDomainError(
+        service.assertDriverAtDropoff(makeOrder(), 0)
+      );
+      expect(err).toBeInstanceOf(DomainError);
+      expect(err.status).toBe(409);
+      expect(err.payload.error).toMatch(/must be within 500m/i);
+    });
+
+    it("falls back to default radius when radiusM is negative", async () => {
+      mockTelemetryRecords = [makeTelemetry(28.6139, OUTSIDE_DEFAULT_INSIDE_1000)];
+      const { service } = makeService();
+      const err = await captureDomainError(
+        service.assertDriverAtDropoff(makeOrder(), -100)
+      );
+      expect(err).toBeInstanceOf(DomainError);
+      expect(err.status).toBe(409);
+      expect(err.payload.error).toMatch(/must be within 500m/i);
+    });
+
+    it("falls back to default radius when radiusM is null", async () => {
+      mockTelemetryRecords = [makeTelemetry(28.6139, OUTSIDE_DEFAULT_INSIDE_1000)];
+      const { service } = makeService();
+      const err = await captureDomainError(
+        service.assertDriverAtDropoff(makeOrder(), null)
+      );
+      expect(err).toBeInstanceOf(DomainError);
+      expect(err.status).toBe(409);
+      expect(err.payload.error).toMatch(/must be within 500m/i);
+    });
+  });
 });
 
 describe("DeliveryVerificationService.geofenceAutoConfirm radius override", () => {

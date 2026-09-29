@@ -73,6 +73,7 @@ import carbonTokenRoutes from './routes/carbonTokenRoutes.js'
 import mlRoutes from './routes/mlRoutes.js'
 import tireAnalyticsRoutes from './routes/tireAnalyticsRoutes.js'
 import arLoadingRoutes from './routes/arLoadingRoutes.js'
+import relayRoutes from './routes/relayRoutes.js'
 
 // ============================================================================
 // 🆕 MULTI-PROVIDER ORACLE & VERIFICATION ROUTES
@@ -179,6 +180,11 @@ import {
   stopWithdrawalSettlementWorker
 } from './workers/withdrawalSettlementWorker.js'
 import './subscribers/reputationSubscriber.js'
+
+// --- AUDIT LOGGING IMPORTS ---
+import auditRoutes from './routes/auditRoutes.js';
+import { auditErrors, startAuditFlushTimer } from './middleware/auditLogger.js';
+
 
 // Configuration load from root folder is handled in db.js
 
@@ -578,6 +584,7 @@ app.use('/api/carbon-credits', carbonTokenRoutes)
 app.use('/api/ml', mlRoutes)
 app.use('/api/tire-analytics', tireAnalyticsRoutes)
 app.use('/api/ar-loading', arLoadingRoutes)
+app.use('/api/relay', relayRoutes)
 
 // ============================================================================
 // 🆕 BLOCKCHAIN MONITORING ROUTES
@@ -922,7 +929,13 @@ async function shutdown(signal) {
     clearTimeout(forceExit)
     process.exit(exitCode)
   }
-}
+} 
+
+// --- COMPLIANCE IMPORTS ---
+import complianceRoutes from './routes/complianceRoutes.js';
+
+// Mount compliance routes
+app.use('/api/compliance', complianceRoutes);
 
 // Handle uncaught exceptions and unhandled rejections.
 // Both handlers route through shutdown() so that connections are drained
@@ -940,7 +953,13 @@ process.on('unhandledRejection', async (reason) => {
   await shutdown('unhandledRejection')
 })
 
-process.on('SIGTERM', () => shutdown('SIGTERM')) // Docker / Kubernetes stop
+// --- FLEET ANALYTICS IMPORTS ---
+import analyticsRoutes from './routes/analyticsRoutes.js';
+
+// Mount analytics routes
+app.use('/api/analytics', analyticsRoutes);
+
+process.on('SIGTERM', () => shutdown('SIGTERM')) // Docker / Kubernetes stop 
 process.on('SIGINT', () => shutdown('SIGINT')) // Ctrl+C in dev
 
 app.use((err, req, res, next) => {
