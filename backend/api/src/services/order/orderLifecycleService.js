@@ -1,5 +1,6 @@
 import { DomainError } from './domainError.js';
 import { DeliveryVerificationService } from './deliveryVerificationService.js';
+import { formatPaginationMeta } from '../../utils/pagination.js';
 import { expireDeliveryOtps, sendPushNotification } from '../notificationService.js';
 import { acquireLock, releaseLock } from '../../lib/redisLock.js';
 import { acquireLockOrFallback } from '../../lib/lockFallback.js';
@@ -290,12 +291,16 @@ export class OrderLifecycleService {
         logger.error("[orderLifecycleService] Failed to map ratings:", err.message);
       }
 
+      const pagination = formatPaginationMeta(count || 0, page, limit);
+
       return {
-        page,
-        limit,
-        total: count || 0,
-        totalPages: Math.ceil((count || 0) / limit),
+        page: pagination.page,
+        limit: pagination.limit,
+        total: pagination.total,
+        totalPages: pagination.totalPages,
         history: history || [],
+        data: history || [],
+        pagination
       };
     });
   }
