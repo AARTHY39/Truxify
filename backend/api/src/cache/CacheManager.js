@@ -27,6 +27,8 @@ const stats = {
   coalesced: 0,
 };
 
+const inFlightSingleflightGroup = new Map();
+
 export function init(client) {
   if (initialized) return;
   redisClient = client;
@@ -54,7 +56,6 @@ export async function get(namespace, entityId, subKey) {
     return null;
   } catch (err) {
     stats.errors++;
-    // Structured logging: pass err as a named field for log aggregation
     logger.error({ err, key }, '[CacheManager] GET error');
     return null;
   }
@@ -76,31 +77,18 @@ export async function set(namespace, entityId, value, opts = {}) {
     return true;
   } catch (err) {
     stats.errors++;
-    // Structured logging: pass err as a named field for log aggregation
     logger.error({ err, key }, '[CacheManager] SET error');
     return false;
   }
 }
 
 export async function getOrSetSingleflight(namespace, entityId, fetcher, opts = {}) {
-  if (!redisClient) {
-    return fetcher();
-  }
-
   const key = CacheKeyBuilder.build(namespace, entityId, opts.subKey);
 
-  try {
-    const raw = await redisClient.get(key);
-    if (raw) {
-      stats.hits++;
-      return JSON.parse(raw);
-    }
-  } catch (err) {
-    stats.errors++;
-    logger.error({ err, key }, '[CacheManager] GET error in singleflight');
+  const cached = await get(namespace, entityId, opts.subKey);
+  if (cached !== null) {
+    return cached;
   }
-
-  stats.misses++;
 
   if (inFlight.has(key)) {
     stats.coalesced++;
@@ -110,7 +98,9 @@ export async function getOrSetSingleflight(namespace, entityId, fetcher, opts = 
   const promise = Promise.resolve()
     .then(fetcher)
     .then(async (data) => {
-      await set(namespace, entityId, data, opts);
+      if (data !== undefined && data !== null) {
+        await set(namespace, entityId, data, opts);
+      }
       return data;
     })
     .finally(() => {
@@ -146,7 +136,6 @@ export async function invalidateBatch(namespace, entityIds, opts = {}) {
     }
   } catch (err) {
     stats.errors++;
-    // Structured logging: pass err as a named field for log aggregation
     logger.error({ err, namespace }, '[CacheManager] Batch invalidation error');
   }
 }
