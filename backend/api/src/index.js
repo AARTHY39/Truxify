@@ -62,6 +62,7 @@ import webhookRoutes from './routes/webhookRoutes.js'
 import auditRoutes from './routes/auditRoutes.js'
 import droneRoutes from './routes/droneRoutes.js'
 import paymentRoutes from './routes/paymentRoutes.js'
+import lumperEscrowRoutes from './routes/lumperEscrowRoutes.js'
 import tollOptimizationRouter from './routes/tollOptimization.js'
 import userRoutes from './routes/userRoutes.js'
 import voiceRoutes from './routes/voiceRoutes.js'
@@ -525,6 +526,10 @@ app.use('/api/orders', authenticate, fraudDetectionMiddleware, networkAnalysisMi
 // long-haul loads. Sits behind authenticate + per-route policy checks.
 app.use('/api/cross-dock', authenticate, fraudDetectionMiddleware, networkAnalysisMiddleware, crossDockRoutes)
 app.use('/api/payments', authenticate, fraudDetectionMiddleware, networkAnalysisMiddleware, paymentRoutes)
+// Lumper fee escrow (broker deposit / driver receipt release). The router
+// already applies `authenticate` + `userLimiter` on each of its own routes,
+// so no additional middleware is layered on here.
+app.use('/api/lumper-escrow', lumperEscrowRoutes)
 app.use('/api/driver', deadheadRoutes)
 app.use('/api/orders', trackingRoutes)
 app.use('/api/driver', driverRoutes)
