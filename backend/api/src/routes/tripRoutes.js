@@ -81,6 +81,29 @@ import { confirmStopSchema, uuidParamSchema } from '../validation/requestSchemas
 import logger from '../middleware/logger.js';
 import { formatPaginationMeta } from '../utils/pagination.js';
 
+/**
+ * Decides whether a submitted delivery OTP is acceptable for a trip stop.
+ *
+ * Security: an order that HAS a real `delivery_otp` configured may only be
+ * unlocked with that exact OTP. The hardcoded demo OTP ("123456") is never
+ * accepted in production and is only a fallback for orders that have no real
+ * OTP configured (typically seeded demo orders). Previously the demo OTP was
+ * accepted unconditionally, so anyone who knew it could verify a stop on an
+ * order that has its own OTP and release escrow payment.
+ *
+ * @param {{ expectedOtp: string|null, submittedOtp: string }} params
+ * @returns {boolean} Whether the submitted OTP lets the stop be confirmed.
+ */
+export function verifyDeliveryOtp({ expectedOtp, submittedOtp }) {
+  if (expectedOtp) {
+    return submittedOtp === expectedOtp;
+  }
+  if (process.env.NODE_ENV === 'production') {
+    return false;
+  }
+  return submittedOtp === '123456';
+}
+
 const router = express.Router();
 const DEFAULT_EVENTS_LIMIT = 100;
 const MAX_EVENTS_LIMIT = 500;
@@ -1067,7 +1090,11 @@ router.post('/:id/confirm-stop', authenticate, userLimiter, async (req, res) => 
     if (!stop) return res.status(404).json({ error: 'Stop not found on this trip.' });
     if (stop.is_completed) return res.status(409).json({ error: 'Stop has already been confirmed.' });
 
-    // Validate only against the OTP issued for the linked order.
+    // Validate OTP against the linked order's real delivery OTP. The hardcoded
+    // demo OTP (123456) is accepted ONLY when the order has no delivery_otp
+    // configured AND the server is not running in production. Previously the
+    // default was accepted unconditionally, so anyone knowing it could verify a
+    // stop on an order that HAS its own OTP and release escrow payment.
     let expectedOtp = null;
     if (owned.trip.order_id) {
       const { data: linkedOrder } = await supabaseAdmin
@@ -1081,7 +1108,7 @@ router.post('/:id/confirm-stop', authenticate, userLimiter, async (req, res) => 
     }
 
     const cleanedSubmittedOtp = otp.trim();
-    if (!expectedOtp || cleanedSubmittedOtp !== expectedOtp) {
+    if (!verifyDeliveryOtp({ expectedOtp, submittedOtp: cleanedSubmittedOtp })) {
       return res.status(400).json({ error: 'Invalid delivery OTP provided.' });
     }
 
