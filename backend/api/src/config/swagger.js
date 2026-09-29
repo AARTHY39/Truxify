@@ -1,6 +1,8 @@
 import logger from '../middleware/logger.js';
 import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Use environment variable for Swagger server URL
 export const normalizeApiPublicUrl = (publicUrl) => {
@@ -10,6 +12,9 @@ export const normalizeApiPublicUrl = (publicUrl) => {
 
 const apiUrl = normalizeApiPublicUrl(process.env.API_PUBLIC_URL);
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const options = {
   definition: {
     openapi: '3.0.0',
@@ -17,6 +22,15 @@ const options = {
       title: 'Truxify Backend API',
       version: '1.0.0',
       description: 'API documentation for Truxify logistics backend',
+    },
+    components: {
+      securitySchemes: {
+        BearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+        },
+      },
     },
     servers: [
       {
@@ -27,10 +41,15 @@ const options = {
       },
     ],
   },
-  apis: ['./src/routes/*.js'], // files containing annotations as above
+  apis: [
+    path.resolve(__dirname, '../routes/*.js'),
+    path.resolve(__dirname, '../../routes/*.js'),
+  ].map((globPath) => globPath.split(path.sep).join('/')),
 };
 
 const swaggerSpec = swaggerJsdoc(options);
+
+export { swaggerSpec };
 
 export const setupSwagger = (app) => {
   if (process.env.NODE_ENV === 'production') {
