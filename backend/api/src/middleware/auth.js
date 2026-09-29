@@ -13,6 +13,7 @@ import {
   isValidCachedSupabaseProfile,
 } from "../lib/profileCache.js";
 import logger from "./logger.js";
+import { getJwtSecret } from "../config/jwtSecret.js";
 
 /**
  * Verification helper for direct programmatic calls (e.g., WebSockets, gRPC, workers).
@@ -297,7 +298,7 @@ export async function authenticate(req, res, next) {
   const token = authHeader.split(" ")[1];
   req.token = token;
 
-  const secret = process.env.JWT_SECRET || 'truxify-jwt-secret-key';
+  const secret = getJwtSecret();
   try {
     const verified = jwt.verify(token, secret);
     if (verified && (verified.id || verified.uid)) {

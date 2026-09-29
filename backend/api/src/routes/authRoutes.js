@@ -58,6 +58,7 @@ import {
   OTP_LOCKOUT_MINUTES,
 } from "../services/order/orderNotificationService.js";
 import logger from "../middleware/logger.js";
+import { getJwtSecret } from "../config/jwtSecret.js";
 
 const router = express.Router();
 
@@ -357,7 +358,10 @@ router.post("/verify-otp", otpVerificationLimiter, async (req, res) => {
   }
 });
 
-const JWT_SECRET = process.env.JWT_SECRET || 'truxify-jwt-secret-key';
+// Signing and verification share one resolver so they can never drift apart.
+// In production this throws when JWT_SECRET is missing or too short instead of
+// silently falling back to a publicly known key.
+const JWT_SECRET = getJwtSecret();
 
 /**
  * @openapi
