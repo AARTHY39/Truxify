@@ -90,6 +90,37 @@ router.post('/mint', authenticate, userLimiter, async (req, res) => {
 });
 
 /**
+ * @openapi
+ * /api/carbon-credits/purchase:
+ *   post:
+ *     tags: [Carbon Credits]
+ *     summary: Purchase and retire carbon credits
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [token_id, buyer_address]
+ *             properties:
+ *               token_id:
+ *                 type: string
+ *               buyer_address:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Carbon credits purchased and retired successfully
+ *       400:
+ *         description: Missing required parameters
+ *       401:
+ *         description: Missing or invalid authentication token
+ *       500:
+ *         description: Carbon credit purchase failed
+ */
+
+/**
  * POST /api/carbon-credits/purchase
  * Enables corporate shippers to buy and retire tokens for Scope 3 offsets.
  * Restricted to shippers, brokers, and admins.
@@ -133,6 +164,31 @@ router.post('/purchase', authenticate, userLimiter, async (req, res) => {
     });
   }
 });
+
+/**
+ * @openapi
+ * /api/carbon-credits/{tokenId}:
+ *   get:
+ *     tags: [Carbon Credits]
+ *     summary: Get carbon credit token details
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: tokenId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Carbon credit token details and chain verification state
+ *       401:
+ *         description: Missing or invalid authentication token
+ *       404:
+ *         description: Carbon credit token not found
+ *       500:
+ *         description: Carbon credit lookup failed
+ */
 
 /**
  * GET /api/carbon-credits/:tokenId
