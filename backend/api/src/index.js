@@ -503,13 +503,14 @@ app.use('/api/health', healthRoutes)
 app.use('/api/v1/health', healthLimiter)
 app.use('/api/v1/health', healthRoutes)
 app.use('/api/', globalLimiter)
-app.use('/api/v1/trips', authenticate, fraudDetectionMiddleware, networkAnalysisMiddleware, tripRoutes)
-app.use('/api/trips', tripRoutes)
 // ============================================================================
 // REQUEST-SCOPED CACHE — created per-request, destroyed after response.
 // Registers before all routes so every request handler benefits.
 // ============================================================================
 app.use('/api', requestCacheMiddleware)
+
+app.use('/api/v1/trips', authenticate, fraudDetectionMiddleware, networkAnalysisMiddleware, tripRoutes)
+app.use('/api/trips', tripRoutes)
 
 // ============================================================================
 // REST API ROUTING
