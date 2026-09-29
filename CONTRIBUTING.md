@@ -141,7 +141,7 @@ Copy `.env.example` at the repository root or in component directories to set yo
 
 | Variable | Description | Default / Example |
 |---|---|---|
-| `PORT` | Node.js Backend API Port | `8080` |
+| `PORT` | Node.js Backend API Port | `5000` |
 | `JWT_SECRET` | Backend JWT signing secret | `truxify-jwt-secret-key` |
 | `POLYGON_RPC_URL` | Polygon JSON-RPC Endpoint | `https://polygon-mumbai.g.alchemy.com/v2/...` |
 | `ESCROW_CONTRACT_ADDRESS` | Deployed TruxifyEscrow contract | `0x1234567890abcdef1234567890abcdef12345678` |
