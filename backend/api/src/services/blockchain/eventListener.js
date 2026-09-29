@@ -21,6 +21,9 @@ const MAX_RECONNECT_DELAY_MS = 30000;
 // Tail of the serialized live-event chain (see enqueueLiveEvent).
 let liveEventQueue = Promise.resolve();
 
+// Promise queue used to serialize execution of live blockchain event handlers
+let liveEventQueue = Promise.resolve();
+
 function clearReconnectTimer() {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
