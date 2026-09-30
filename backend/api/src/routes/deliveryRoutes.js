@@ -29,6 +29,7 @@ router.post('/:id/confirm-otp', authenticate, userLimiter, validateBody(confirmO
     }
 
     const orderData = order.data;
+    const isGeofenced = false;
 
     // Ensure access control: only the assigned driver or admin can confirm delivery
     if (orderData.driver_id !== req.user.id) {
