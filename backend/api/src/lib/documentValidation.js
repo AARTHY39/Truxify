@@ -76,7 +76,6 @@ if (normalizedDeclared && detected !== normalizedDeclared) {
     `File content (${detected}) does not match declared type (${normalizedDeclared}).`
   );
 }
-
   return detected;
 }
 
