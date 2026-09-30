@@ -77,6 +77,8 @@ _training_executor: ThreadPoolExecutor = ThreadPoolExecutor(
     max_workers=ML_TRAINING_MAX_WORKERS,
     thread_name_prefix="ml-training",
 )
+_training_admission_lock = threading.Lock()
+_active_training_models: set[str] = set()
 
 # Cancellation token for the training job currently running on this worker
 # thread. It is thread-local because many worker threads may be training
@@ -99,7 +101,13 @@ def is_training_cancelled() -> bool:
     return event is not None and event.is_set()
 
 
-def _run_train_with_cancel(train_fn: Callable[..., Any], cancel_event: threading.Event, args, kwargs) -> Any:
+def _run_train_with_cancel(
+    model_name: str,
+    train_fn: Callable[..., Any],
+    cancel_event: threading.Event,
+    args,
+    kwargs,
+) -> Any:
     prev = getattr(_training_cancel, "event", None)
     _training_cancel.event = cancel_event
     try:
@@ -112,6 +120,10 @@ def _run_train_with_cancel(train_fn: Callable[..., Any], cancel_event: threading
         return None
     finally:
         _training_cancel.event = prev
+        # A timed-out request does not stop its thread. Keep admission occupied
+        # until the worker really exits, including across event loops.
+        with _training_admission_lock:
+            _active_training_models.discard(model_name)
 
 
 def _consume_training_result(fut: "asyncio.Future") -> None:
@@ -141,25 +153,42 @@ async def run_training_job(
     publish step checks ``is_training_cancelled()`` and aborts, so a
     timed-out request can never deploy an untracked/invalid model.
 
-    Concurrent trainings of the SAME model are serialized by the caller via
-    ``get_model_lock(model_name)``; different models run independently.
+    Admission is bounded by the worker count; overload is rejected with 503
+    instead of entering the executor's unbounded queue. A second job for the
+    same model receives 409, even while a timed-out worker is winding down.
     """
     loop = asyncio.get_running_loop()
     cancel_event = threading.Event()
-    future = loop.run_in_executor(
-        _training_executor,
-        _run_train_with_cancel,
-        train_fn,
-        cancel_event,
-        args,
-        kwargs,
-    )
+    with _training_admission_lock:
+        if model_name in _active_training_models:
+            raise HTTPException(
+                status_code=409, detail="Model training already in progress"
+            )
+        if len(_active_training_models) >= ML_TRAINING_MAX_WORKERS:
+            raise HTTPException(
+                status_code=503, detail="ML training capacity exhausted; retry later"
+            )
+        _active_training_models.add(model_name)
+    try:
+        future = loop.run_in_executor(
+            _training_executor,
+            _run_train_with_cancel,
+            model_name,
+            train_fn,
+            cancel_event,
+            args,
+            kwargs,
+        )
+    except BaseException:
+        with _training_admission_lock:
+            _active_training_models.discard(model_name)
+        raise
     future.add_done_callback(_consume_training_result)
     try:
-        return await asyncio.wait_for(future, timeout=timeout)
-    except asyncio.TimeoutError:
+        return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
         logger.warning(
-            "Training job '%s' timed out after %.1fs; signalling cancellation",
+            "Training job '%s' cancelled or exceeded %.1fs; signalling cancellation",
             model_name,
             timeout,
         )

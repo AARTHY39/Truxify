@@ -26,6 +26,7 @@ sys.modules["services.traffic_pipeline"] = mock_traffic_module
 
 mock_execution_module = types.ModuleType("app.execution")
 mock_execution_module.run_inference = _run_inference_stub
+mock_execution_module.run_training_job = _run_inference_stub
 sys.modules["app.execution"] = mock_execution_module
 
 from routes import eta_routes

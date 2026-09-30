@@ -74,6 +74,21 @@ Heavy optional deep learning frameworks (e.g., PyTorch Geometric, OpenCV, MediaP
 
 All endpoints require the `X-API-Key` header matching the environment `ML_API_KEY`.
 
+### ETA model training capacity
+
+`POST /eta/train` uses the dedicated training executor rather than consuming
+inference slots. `ML_TRAINING_MAX_WORKERS` (default `2`) bounds admitted training
+jobs across models in each process. Duplicate jobs for one model return HTTP
+409; excess jobs return 503 immediately. `ML_TRAINING_TIMEOUT_SECONDS` (default
+`300`) limits the request duration; ETA training returns 504 on timeout.
+
+A timed-out or disconnected request signals cancellation, but Python cannot
+terminate a running worker thread. Its capacity remains occupied until it exits.
+ETA training keeps the current model available, trains a separate instance, and
+replaces the saved artifact atomically after checking cancellation. Failed or
+cancelled training preserves the previous model. These limits apply per service
+process; CPU isolation across replicas requires separate training infrastructure.
+
 ---
 
 ## 🧪 Running Unit Tests
