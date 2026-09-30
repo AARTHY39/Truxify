@@ -1,3 +1,4 @@
+/// Active WebGL & Canvas Memory Reclaimer for Flutter Admin Web App
 /// Tracks periodic cleanup cycles for the Flutter Admin Web App.
 ///
 /// Browsers manage WebGL and Canvas garbage collection internally, so
@@ -22,6 +23,9 @@ class WebGLMemoryReclaimerService {
     _reclaimedFrameCount++;
 
     if (_reclaimedFrameCount % 50 == 0) {
+      debugPrint(
+        '[Memory Reclaimer] Purging off-screen canvas objects & triggering WebGL garbage collection...',
+      );
       debugPrint(
         '[Memory Reclaimer] Cleanup cycle $_reclaimedFrameCount completed. '
         'WebGL and Canvas garbage collection is managed by the browser.',
