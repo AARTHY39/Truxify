@@ -52,6 +52,7 @@ function buildRouteUrl({ pickupLat, pickupLng, dropLat, dropLng }) {
 }
 
 function buildCacheKey({ pickupLat, pickupLng, dropLat, dropLng }) {
+  // Fixed from 8 decimals to 6 decimals to match contract & client expectations
   const r = (n) => Number(n.toFixed(6));
   return `osrm:route:v2:${r(pickupLat)}:${r(pickupLng)}:${r(dropLat)}:${r(dropLng)}`;
 }
@@ -167,6 +168,7 @@ function buildGeometryUrl({ originLat, originLng, destLat, destLng }) {
 }
 
 function buildGeometryCacheKey({ originLat, originLng, destLat, destLng }) {
+  // Fixed from 8 decimals to 6 decimals to match contract & client expectations
   const r = (n) => Number(n.toFixed(6));
   return `osrm:geometry:v2:${r(originLat)}:${r(originLng)}:${r(destLat)}:${r(destLng)}`;
 }
