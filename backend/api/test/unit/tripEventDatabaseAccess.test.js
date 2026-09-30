@@ -58,7 +58,7 @@ const driver = '10000000-0000-0000-0000-000000000001';
 const customer = '10000000-0000-0000-0000-000000000002';
 const stranger = '10000000-0000-0000-0000-000000000003';
 const orderId = '20000000-0000-0000-0000-000000000001';
-const displayId = '30000000-0000-0000-0000-000000000001';
+const displayId = '#FF20260930ABCDEFGHIJKL';
 const event = { id: 'event-one', trip_id: `TX-${displayId}`, type: 'gpsUpdate',
   occurred_at: '2026-09-30T10:00:00Z', payload: { lat: 20, lng: 70 } };
 async function run(path, { userId = driver, role = 'driver', body = {}, method = 'post', params = {} } = {}) {
@@ -74,7 +74,7 @@ describe('trip event server-side access behind ownership gates', () => {
     state.db = new PGlite();
     await state.db.exec(`
       CREATE ROLE anon; CREATE ROLE service_role BYPASSRLS;
-      CREATE TABLE orders (id uuid PRIMARY KEY, order_display_id uuid, driver_id uuid, customer_id uuid);
+      CREATE TABLE orders (id uuid PRIMARY KEY, order_display_id text, driver_id uuid, customer_id uuid);
       CREATE TABLE trip_events (event_id text PRIMARY KEY, user_id uuid, trip_id uuid, event_type text,
         event_timestamp timestamptz, latitude numeric, longitude numeric, metadata jsonb, created_at timestamptz);
       CREATE TABLE processed_batches (id serial PRIMARY KEY, idempotency_key text, user_id uuid, event_count integer,
@@ -98,7 +98,7 @@ describe('trip event server-side access behind ownership gates', () => {
     const res = await batch();
     expect(res.status).toHaveBeenCalledWith(202);
     await state.db.exec('RESET ROLE');
-    expect((await state.db.query('SELECT user_id FROM trip_events')).rows).toEqual([{ user_id: driver }]);
+    expect((await state.db.query('SELECT user_id, trip_id FROM trip_events')).rows).toEqual([{ user_id: driver, trip_id: orderId }]);
     expect((await state.db.query('SELECT user_id FROM processed_batches')).rows).toEqual([{ user_id: driver }]);
     expect(anon.from).not.toHaveBeenCalled();
   });
@@ -122,7 +122,7 @@ describe('trip event server-side access behind ownership gates', () => {
     const res = await batch({ userId: customer, role: 'customer' });
     expect(res.status).toHaveBeenCalledWith(202);
     await state.db.exec('RESET ROLE');
-    expect((await state.db.query('SELECT user_id FROM trip_events')).rows).toEqual([{ user_id: driver }]);
+    expect((await state.db.query('SELECT user_id, trip_id FROM trip_events')).rows).toEqual([{ user_id: driver, trip_id: orderId }]);
   });
   it('rejects a foreign trip before idempotency lookup or writes', async () => {
     const res = await batch({ userId: stranger });
@@ -139,6 +139,18 @@ describe('trip event server-side access behind ownership gates', () => {
     expect(res.status).not.toHaveBeenCalled();
     expect(res.json.mock.calls[0][0].events.map(row => row.user_id)).toEqual([driver]);
     expect(anon.from).not.toHaveBeenCalled();
+  });
+  it('resolves display IDs for admin uploads as well', async () => {
+    const res = await batch({ userId: stranger, role: 'admin' });
+    expect(res.status).toHaveBeenCalledWith(202);
+    await state.db.exec('RESET ROLE');
+    expect((await state.db.query('SELECT trip_id FROM trip_events')).rows).toEqual([{ trip_id: orderId }]);
+  });
+  it('supports events without a trip reference', async () => {
+    const res = await batch({ body: { events: [{ ...event, trip_id: null }], idempotencyKey: 'unlinked' } });
+    expect(res.status).toHaveBeenCalledWith(202);
+    await state.db.exec('RESET ROLE');
+    expect((await state.db.query('SELECT trip_id FROM trip_events')).rows).toEqual([{ trip_id: null }]);
   });
   it('rejects a foreign reader before querying events', async () => {
     const res = await run('/:id/events', { userId: stranger, method: 'get', params: { id: orderId } });

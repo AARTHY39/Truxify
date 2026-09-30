@@ -360,39 +360,33 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
     // caller owns or is assigned to. Never trust a client-supplied trip_id.
     // This runs BEFORE the idempotency short-circuit below, otherwise a
     // replayed batch would return 202 and skip authorization entirely.
-    if (req.user.role !== 'admin') {
-      const tripIds = [...new Set(events.map(event => event.trip_id).filter(Boolean))];
-
-      if (tripIds.length > 0) {
-        // Trip ids sent by the app are trip display ids ('TX-' + order display id),
-        // not the orders.id uuid. Map them back to the bare order display id before
-        // looking up the owning order, otherwise every batch is rejected with 403.
-        const orderDisplayIds = tripIds.map(tripId =>
-          typeof tripId === 'string' && tripId.startsWith('TX-') ? tripId.slice(3) : tripId
-        );
-
-        const { data: ownedOrders, error: ownershipError } = await supabaseAdmin
-          .from('orders')
-          .select('order_display_id, driver_id, customer_id')
-          .in('order_display_id', orderDisplayIds);
-
-        if (ownershipError) {
-          logger.error('[SyncEngine] Failed to verify trip ownership:', ownershipError.message);
-          return res.status(500).json({ error: 'Internal Server Error' });
+    const tripIds = [...new Set(events.map(event => event.trip_id).filter(Boolean))];
+    const orderIdByTripId = new Map();
+    if (tripIds.length > 0) {
+      // App trip IDs are 'TX-' + order_display_id. Persist the resolved order
+      // UUID, matching trip_events.trip_id and the GET /:id/events reader.
+      const orderDisplayIds = tripIds.map(tripId =>
+        typeof tripId === 'string' && tripId.startsWith('TX-') ? tripId.slice(3) : tripId
+      );
+      const { data: ownedOrders, error: ownershipError } = await supabaseAdmin
+        .from('orders')
+        .select('id, order_display_id, driver_id, customer_id')
+        .in('order_display_id', orderDisplayIds);
+      if (ownershipError) {
+        logger.error('[SyncEngine] Failed to verify trip ownership:', ownershipError.message);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      const orderByDisplayId = new Map((ownedOrders || []).map(order => [order.order_display_id, order]));
+      for (const tripId of tripIds) {
+        const orderDisplayId = typeof tripId === 'string' && tripId.startsWith('TX-') ? tripId.slice(3) : tripId;
+        const order = orderByDisplayId.get(orderDisplayId);
+        const isDriver = order?.driver_id === userId;
+        const isCustomer = order?.customer_id === userId;
+        if (!order || (req.user.role !== 'admin' && !isDriver && !isCustomer)) {
+          logger.warn('[SyncEngine] Rejected batch: user', userId, 'not authorised for trip', tripId);
+          return res.status(403).json({ error: 'Access Denied: You are not authorised to add events to this trip.' });
         }
-
-        const orderByDisplayId = new Map((ownedOrders || []).map(order => [order.order_display_id, order]));
-
-        for (const tripId of tripIds) {
-          const orderDisplayId = typeof tripId === 'string' && tripId.startsWith('TX-') ? tripId.slice(3) : tripId;
-          const order = orderByDisplayId.get(orderDisplayId);
-          const isDriver = order?.driver_id === userId;
-          const isCustomer = order?.customer_id === userId;
-          if (!order || (!isDriver && !isCustomer)) {
-            logger.warn('[SyncEngine] Rejected batch: user', userId, 'not authorised for trip', tripId);
-            return res.status(403).json({ error: 'Access Denied: You are not authorised to add events to this trip.' });
-          }
-        }
+        orderIdByTripId.set(tripId, order.id);
       }
     }
 
@@ -417,9 +411,7 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
       return {
         event_id: event.id,
         user_id: userId,
-        trip_id: (typeof event.trip_id === 'string' && event.trip_id.startsWith('TX-'))
-          ? event.trip_id.slice(3)
-          : (event.trip_id || null),
+        trip_id: event.trip_id ? orderIdByTripId.get(event.trip_id) : null,
         event_type: event.type,
         event_timestamp: event.occurred_at,
         latitude: event.payload?.lat !== undefined ? Number(event.payload.lat) : null,
@@ -598,11 +590,10 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
       }
     }
 
-    const tripDisplayId = order.order_display_id;
     let eventsQuery = supabaseAdmin
       .from('trip_events')
       .select('event_id, user_id, trip_id, event_type, event_timestamp, latitude, longitude, metadata, created_at', { count: 'exact' })
-      .eq('trip_id', tripDisplayId);
+      .eq('trip_id', order.id);
 
     if (type && typeof type === 'string') {
       eventsQuery = eventsQuery.eq('event_type', type);
