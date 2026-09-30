@@ -73,7 +73,7 @@
 
 import express from 'express';
 import { z } from 'zod';
-import { supabase, supabaseAdmin } from '../config/db.js';
+import { supabaseAdmin } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
 import { validateParams } from '../middleware/validate.js';
@@ -371,7 +371,7 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
           typeof tripId === 'string' && tripId.startsWith('TX-') ? tripId.slice(3) : tripId
         );
 
-        const { data: ownedOrders, error: ownershipError } = await supabase
+        const { data: ownedOrders, error: ownershipError } = await supabaseAdmin
           .from('orders')
           .select('order_display_id, driver_id, customer_id')
           .in('order_display_id', orderDisplayIds);
@@ -398,7 +398,7 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
 
     // 3. Check Idempotency (Prevent double processing)
     // We check if this exact batch has already been processed recently.
-    const { data: existingBatch } = await supabase
+    const { data: existingBatch } = await supabaseAdmin
       .from('processed_batches')
       .select('id')
       .eq('idempotency_key', idempotencyKey)
@@ -429,12 +429,12 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
       };
     });
 
-    // 3. Bulk Insert / Upsert into the trip_events table
-    // Upsert ensures that if a specific event ID already exists, it just updates it
-    // rather than failing the whole batch.
-    const { error: insertError } = await supabase
+    // 3. Insert immutable events using the server client after ownership checks.
+    // A retry or globally colliding event ID must never rewrite an existing
+    // event, including one uploaded by another user.
+    const { error: insertError } = await supabaseAdmin
       .from('trip_events')
-      .upsert(recordsToInsert, { onConflict: 'event_id' });
+      .upsert(recordsToInsert, { onConflict: 'event_id', ignoreDuplicates: true });
 
     if (insertError) {
       logger.error('[SyncEngine] Bulk Insert Failed:', insertError.message);
@@ -453,7 +453,7 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
     // 4. Log the successful batch using the idempotency key
     // This prevents the same batch from being uploaded again if the client crashes
     // before it can mark them as synced in its local SQLite db.
-    const { error: idempotencyError } = await supabase
+    const { error: idempotencyError } = await supabaseAdmin
       .from('processed_batches')
       .insert({
         idempotency_key: idempotencyKey,
@@ -599,7 +599,7 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
     }
 
     const tripDisplayId = order.order_display_id;
-    let eventsQuery = supabase
+    let eventsQuery = supabaseAdmin
       .from('trip_events')
       .select('event_id, user_id, trip_id, event_type, event_timestamp, latitude, longitude, metadata, created_at', { count: 'exact' })
       .eq('trip_id', tripDisplayId);
