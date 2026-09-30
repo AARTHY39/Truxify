@@ -9,7 +9,7 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 class SinusoidalPositionEmbedding(nn.Module):
-    """Sinusoidal position embeddings for diffusion timesteps"""
+    """Sinusoidal position embeddings for diffusion timesteps""" 
     
     def __init__(self, dim: int):
         super().__init__()
