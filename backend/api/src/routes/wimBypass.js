@@ -71,7 +71,8 @@ router.post('/request-bypass', async (req, res) => {
         const axleWeight = Number(rawLoadWeight) * LBS_PER_TONNE;
         // There is no safety-score column in the schema; derive the safety
         // signal from the driver's verified registration (fail closed to 0).
-        const safetyScore = profile?.is_digilocker_verified ? 100 : 0;
+        const safetyScore = isVerified ? 100 : 0;
+
 
         // Number(null) and Number('') are both 0, so a load with no registered
         // weight used to coerce to the lightest possible axle weight and be
