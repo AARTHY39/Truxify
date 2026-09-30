@@ -18,3 +18,7 @@ Run these commands from the repository root:
 
 keytool -genkeypair -v -keystore apps/driver/android/upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias driver
 
+keytool -genkeypair -v -keystore apps/customer/android/upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias customer
+
+```
+
