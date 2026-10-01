@@ -83,8 +83,8 @@ class TokenizationService {
 
         this.tokenAddress = process.env.ASSET_TOKEN_ADDRESS;
         this.provider = new ethers.JsonRpcProvider(process.env.POLYGON_RPC_URL);
-        this.wallet = new ethers.Wallet(process.env.PRIVATE_KEY, this.provider);
-        this.token = new ethers.Contract(this.tokenAddress, this.tokenABI, this.wallet);
+        this._wallet = null;
+        this._token = null;
 
         logger.info('✅ Tokenization Service initialized');
     }
@@ -98,6 +98,9 @@ class TokenizationService {
     // ============ Chain clients (created on first use) ============
 
     get wallet() {
+        if (!this.provider || !this.tokenAddress) {
+            return null;
+        }
         if (!this._wallet) {
             if (!process.env.PRIVATE_KEY) {
                 throw new Error('Tokenization chain access is not configured: set PRIVATE_KEY');
@@ -112,6 +115,9 @@ class TokenizationService {
     }
 
     get token() {
+        if (!this.provider || !this.tokenAddress) {
+            return null;
+        }
         if (!this._token) {
             if (!this.tokenAddress) {
                 throw new Error('Tokenization chain access is not configured: set ASSET_TOKEN_ADDRESS');
