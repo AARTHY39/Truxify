@@ -88,12 +88,44 @@ class TokenizationService {
 
         logger.info('✅ Tokenization Service initialized');
     }
-
-    _requireConfigured() {
-        if (!this.token || !this.wallet || !this.provider || !this.tokenAddress) {
+    
+        _requireConfigured() {
+        if (!this.provider || !this.tokenAddress) {
             throw new Error('TokenizationService is disabled: missing required environment variables');
         }
     }
+
+    // ============ Chain clients (created on first use) ============
+
+    get wallet() {
+        if (!this._wallet) {
+            if (!process.env.PRIVATE_KEY) {
+                throw new Error('Tokenization chain access is not configured: set PRIVATE_KEY');
+            }
+            this._wallet = new ethers.Wallet(process.env.PRIVATE_KEY, this.provider);
+        }
+        return this._wallet;
+    }
+
+    set wallet(value) {
+        this._wallet = value;
+    }
+
+    get token() {
+        if (!this._token) {
+            if (!this.tokenAddress) {
+                throw new Error('Tokenization chain access is not configured: set ASSET_TOKEN_ADDRESS');
+            }
+            this._token = new ethers.Contract(this.tokenAddress, this.tokenABI, this.wallet);
+        }
+        return this._token;
+    }
+
+    set token(value) {
+        this._token = value;
+    }
+    
+
 
     /**
      * Return the server relayer signer for broadcasting a *user-authorized*
