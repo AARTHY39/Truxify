@@ -11,6 +11,7 @@ describe('CircuitBreaker Unit Tests', () => {
   afterEach(() => {
     cb.destroy();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   describe('constructor', () => {
@@ -52,6 +53,12 @@ describe('CircuitBreaker Unit Tests', () => {
   describe('getState', () => {
     it('returns CLOSED initially', () => {
       expect(cb.getState()).toBe(CircuitState.CLOSED);
+    });
+
+    it('transitions from OPEN to HALF_OPEN when nextAttempt is reached', () => {
+      cb.state = CircuitState.OPEN;
+      cb.nextAttempt = Date.now() - 100;
+      expect(cb.getState()).toBe(CircuitState.HALF_OPEN);
     });
   });
 
@@ -134,12 +141,14 @@ describe('CircuitBreaker Unit Tests', () => {
       await expect(breaker.execute(slowFn)).rejects.toThrow('[CircuitBreaker:testSignal] Request timed out after 50ms');
       expect(capturedSignal).toBeInstanceOf(AbortSignal);
       expect(capturedSignal.aborted).toBe(true);
+      breaker.destroy();
     });
 
     it('rejects caller with expected timeout error', async () => {
       const breaker = new CircuitBreaker('testTimeoutErr', { requestTimeoutMs: 50 });
       const slowFn = () => new Promise((resolve) => setTimeout(resolve, 200));
       await expect(breaker.execute(slowFn)).rejects.toThrow('[CircuitBreaker:testTimeoutErr] Request timed out after 50ms');
+      breaker.destroy();
     });
 
     it('does not allow late completion of a timed-out operation to change breaker state', async () => {
@@ -164,6 +173,7 @@ describe('CircuitBreaker Unit Tests', () => {
 
       expect(breaker.getState()).toBe(CircuitState.CLOSED);
       expect(breaker.failureCount).toBe(0);
+      breaker.destroy();
     });
 
     it('does not cause an unhandled promise rejection if a timed-out operation later rejects', async () => {
@@ -191,6 +201,7 @@ describe('CircuitBreaker Unit Tests', () => {
 
       process.removeListener('unhandledRejection', onUnhandled);
       expect(unhandledEmitted).toBe(false);
+      breaker.destroy();
     });
   });
 
@@ -207,6 +218,7 @@ describe('CircuitBreaker Unit Tests', () => {
       expect(breaker.getState()).toBe(CircuitState.OPEN);
       expect(breaker.failureCount).toBe(1);
       expect(breaker.timeoutCount).toBe(1);
+      breaker.destroy();
     });
 
     it('does not count timeout as failure when countTimeoutAsFailure is false', async () => {
@@ -221,6 +233,7 @@ describe('CircuitBreaker Unit Tests', () => {
       expect(breaker.getState()).toBe(CircuitState.CLOSED);
       expect(breaker.failureCount).toBe(0);
       expect(breaker.timeoutCount).toBe(1);
+      breaker.destroy();
     });
 
     it('increments successCount on success and timeoutCount on timeout', async () => {
@@ -233,6 +246,7 @@ describe('CircuitBreaker Unit Tests', () => {
 
       await expect(breaker.execute(slowFn)).rejects.toThrow();
       expect(breaker.timeoutCount).toBe(1);
+      breaker.destroy();
     });
 
     it('returns expected metrics structure from getMetrics()', async () => {
@@ -251,10 +265,11 @@ describe('CircuitBreaker Unit Tests', () => {
         timeoutCount: 1,
         successCount: 1,
       });
+      breaker.destroy();
     });
   });
 
-  describe('Half-Open Timer & Single Probe', () => {
+  describe('Half-Open Timer & Single Probe Safety', () => {
     it('unrefs half-open timer when supported', () => {
       vi.useFakeTimers();
       const breaker = new CircuitBreaker('testUnref', { resetTimeoutMs: 1000 });
@@ -266,7 +281,7 @@ describe('CircuitBreaker Unit Tests', () => {
       breaker._scheduleHalfOpen();
 
       expect(mockTimer.unref).toHaveBeenCalled();
-      vi.useRealTimers();
+      breaker.destroy();
     });
 
     it('functions correctly when unref() is unavailable on half-open timer', () => {
@@ -278,7 +293,7 @@ describe('CircuitBreaker Unit Tests', () => {
       vi.spyOn(global, 'setTimeout').mockReturnValue(mockTimer);
 
       expect(() => breaker._scheduleHalfOpen()).not.toThrow();
-      vi.useRealTimers();
+      breaker.destroy();
     });
 
     it('preserves single-probe behavior in HALF_OPEN state', async () => {
@@ -304,6 +319,120 @@ describe('CircuitBreaker Unit Tests', () => {
       await exec1;
 
       expect(breaker.state).toBe(CircuitState.CLOSED);
+      breaker.destroy();
+    });
+
+    it('does not allow a timed-out probe to release probe flag while still running', async () => {
+      const breaker = new CircuitBreaker('testTimedOutProbeFlag', {
+        requestTimeoutMs: 50,
+        countTimeoutAsFailure: false,
+      });
+
+      breaker.state = CircuitState.HALF_OPEN;
+
+      let resolveSlow;
+      const slowPromise = new Promise((resolve) => {
+        resolveSlow = resolve;
+      });
+      const slowFn = vi.fn().mockReturnValue(slowPromise);
+
+      const exec1 = breaker.execute(slowFn);
+      await expect(exec1).rejects.toThrow('Request timed out after 50ms');
+
+      // The probe timed out, but slowPromise has NOT settled yet.
+      // Another request in HALF_OPEN must be rejected because the probe is still in flight!
+      await expect(breaker.execute(vi.fn())).rejects.toThrow('HALF_OPEN (probe in flight)');
+
+      // Once slowPromise settles:
+      resolveSlow('done');
+      await slowPromise;
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Now probe flag should be released:
+      const okFn = vi.fn().mockResolvedValue('ok');
+      const res = await breaker.execute(okFn);
+      expect(res).toBe('ok');
+      breaker.destroy();
+    });
+
+    it('prevents a stale settling probe from releasing a newer probe flag', async () => {
+      const breaker = new CircuitBreaker('testStaleProbeToken', {
+        requestTimeoutMs: 50,
+        countTimeoutAsFailure: false,
+      });
+
+      breaker.state = CircuitState.HALF_OPEN;
+
+      let resolveProbe1;
+      const probe1Promise = new Promise((r) => { resolveProbe1 = r; });
+      const exec1 = breaker.execute(() => probe1Promise);
+      await expect(exec1).rejects.toThrow('Request timed out after 50ms');
+
+      // Manual reset simulates reset/new probe cycle
+      breaker.reset();
+      breaker.state = CircuitState.HALF_OPEN;
+
+      let resolveProbe2;
+      const probe2Promise = new Promise((r) => { resolveProbe2 = r; });
+      const exec2 = breaker.execute(() => probe2Promise);
+
+      // Late resolution of probe1 must NOT clear probe2's flag
+      resolveProbe1('stale probe 1');
+      await probe1Promise;
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Attempting another probe while probe 2 is in flight must still fail
+      await expect(breaker.execute(vi.fn())).rejects.toThrow('HALF_OPEN (probe in flight)');
+
+      resolveProbe2('probe 2 ok');
+      await exec2;
+      breaker.destroy();
+    });
+
+    it('blocks a new probe after OPEN to HALF_OPEN transition when timed-out probe is still running (countTimeoutAsFailure = true)', async () => {
+      const breaker = new CircuitBreaker('testOpenToHalfOpenProbeBlock', {
+        requestTimeoutMs: 50,
+        failureThreshold: 1,
+        resetTimeoutMs: 100,
+        countTimeoutAsFailure: true,
+      });
+
+      breaker.state = CircuitState.HALF_OPEN;
+
+      let resolveSlow;
+      const slowPromise = new Promise((resolve) => { resolveSlow = resolve; });
+      const slowFn = vi.fn().mockReturnValue(slowPromise);
+
+      // Probe times out and countTimeoutAsFailure=true opens circuit
+      await expect(breaker.execute(slowFn)).rejects.toThrow('Request timed out after 50ms');
+      expect(breaker.state).toBe(CircuitState.OPEN);
+
+      // Simulate transition to HALF_OPEN
+      breaker.nextAttempt = Date.now() - 10;
+      expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
+
+      // Since slowPromise is STILL running, new request in HALF_OPEN must be rejected
+      await expect(breaker.execute(vi.fn())).rejects.toThrow('HALF_OPEN (probe in flight)');
+
+      resolveSlow('finally done');
+      await slowPromise;
+      await new Promise((r) => setTimeout(r, 10));
+
+      breaker.destroy();
+    });
+
+    it('records successCount as 1 on a successful HALF_OPEN recovery probe', async () => {
+      const breaker = new CircuitBreaker('testHalfOpenSuccessCount', { failureThreshold: 1, resetTimeoutMs: 1000 });
+      breaker.state = CircuitState.HALF_OPEN;
+
+      const probeFn = vi.fn().mockResolvedValue('recovered');
+      const result = await breaker.execute(probeFn);
+
+      expect(result).toBe('recovered');
+      expect(breaker.state).toBe(CircuitState.CLOSED);
+      expect(breaker.successCount).toBe(1);
+      expect(breaker.getMetrics().successCount).toBe(1);
+      breaker.destroy();
     });
   });
 
@@ -321,4 +450,4 @@ describe('CircuitBreaker Unit Tests', () => {
       expect(cb.timeoutCount).toBe(0);
     });
   });
-});
+});
