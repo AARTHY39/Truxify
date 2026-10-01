@@ -7,6 +7,8 @@ import pytest
 
 
 class _TrafficPipelineStub:
+    build_route_signature = staticmethod(lambda destination: "test-route-signature")
+
     def __init__(self, db_url, redis_url):
         self.ingest_traffic_data = AsyncMock()
         self.predict_eta = AsyncMock()

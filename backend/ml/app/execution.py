@@ -3,7 +3,7 @@
 FastAPI async endpoints must never run CPU-bound inference or blocking I/O
 directly on the event loop: a single expensive request would stall every
 other request, including ``/health``.  This module provides a shared, bounded
-``ThreadPoolExecutor`` plus an ``asyncio.Semaphore`` so expensive inference is
+``ThreadPoolExecutor`` plus process-wide admission so expensive inference is
 executed off the event loop with a configurable concurrency cap and
 deterministic backpressure (HTTP 503 when saturated).
 
@@ -13,26 +13,26 @@ Configuration (environment variables):
 - ``ML_INFERENCE_MAX_WORKERS``            executor threads (default 4).
 - ``ML_INFERENCE_QUEUE_TIMEOUT_SECONDS``  how long a request waits for an
   inference slot before the service sheds load with 503 (default 5.0).
+- ``ML_INFERENCE_MAX_WAITERS``            bounded admission waiters (default32).
+- ``ML_INFERENCE_TIMEOUT_SECONDS``       response deadline (default30seconds).
 
 The executor has application/process lifetime: it is created once at import
 time and reused for every request.  ``close_inference_executor`` is wired into
 the FastAPI shutdown hook so no worker threads leak.
 
-The semaphore is per event loop (weakly referenced from the running loop).
-``asyncio`` primitives bind to the loop that first awaits them, and the ML
-service's unit tests exercise the app across many short-lived event loops
-(one per ``TestClient`` / ``asyncio.run``); a single module-level semaphore
-would raise ``RuntimeError: bound to a different event loop``.  In production
-uvicorn runs exactly one loop, so capacity is still shared globally.
+Admission counters are protected by a native threading lock. Async waiters are
+bounded and poll without blocking the loop. Native future completion owns slot
+release, including after an HTTP timeout/disconnect or event-loop shutdown.
 """
 
 import asyncio
 import logging
+import math
 import os
 import threading
-import weakref
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict
+from typing import Any
 
 from fastapi import HTTPException
 
@@ -62,14 +62,30 @@ if ML_INFERENCE_MAX_WORKERS < ML_MAX_CONCURRENT_INFERENCE:
     )
     ML_INFERENCE_MAX_WORKERS = ML_MAX_CONCURRENT_INFERENCE
 
+ML_INFERENCE_MAX_WAITERS = int(os.environ.get("ML_INFERENCE_MAX_WAITERS", "32"))
+ML_INFERENCE_TIMEOUT_SECONDS = float(os.environ.get("ML_INFERENCE_TIMEOUT_SECONDS", "30"))
+
+def _validate_inference_limits(max_concurrent, max_workers, max_waiters,
+                               queue_timeout, inference_timeout) -> None:
+    if (not isinstance(max_concurrent, int) or isinstance(max_concurrent, bool) or max_concurrent < 1
+            or not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1
+            or not isinstance(max_waiters, int) or isinstance(max_waiters, bool) or max_waiters < 0
+            or not math.isfinite(queue_timeout) or queue_timeout < 0
+            or not math.isfinite(inference_timeout) or inference_timeout <= 0):
+        raise ValueError("Inference limits must be positive; waiters and queue timeout may be zero")
+
+
+_validate_inference_limits(ML_MAX_CONCURRENT_INFERENCE, ML_INFERENCE_MAX_WORKERS,
+                           ML_INFERENCE_MAX_WAITERS, ML_INFERENCE_QUEUE_TIMEOUT_SECONDS,
+                           ML_INFERENCE_TIMEOUT_SECONDS)
 _inference_executor: ThreadPoolExecutor = ThreadPoolExecutor(
     max_workers=ML_INFERENCE_MAX_WORKERS,
     thread_name_prefix="ml-inference",
 )
-# One semaphore per live event loop (weak refs so closed loops are reclaimed).
-_inference_semaphores: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = (
-    weakref.WeakKeyDictionary()
-)
+# Capacity belongs to native work, not to an HTTP task or an event loop.
+_inference_guard = threading.Lock()
+_active_inference = 0
+_waiting_inference = 0
 
 # Dedicated bounded executor for training jobs so a long-running training can
 # never starve the (smaller, latency-sensitive) inference pool.
@@ -131,10 +147,7 @@ def _consume_training_result(fut: "asyncio.Future") -> None:
     exception so the executor never logs 'exception was never retrieved'."""
     if fut.cancelled():
         return
-    try:
-        fut.exception()
-    except Exception:
-        pass
+    fut.exception()
 
 
 async def run_training_job(
@@ -202,14 +215,36 @@ def close_training_executor() -> None:
     logger.info("ML training executor shut down")
 
 
-def _get_semaphore() -> asyncio.Semaphore:
-    """Return the semaphore bound to the currently running event loop."""
+async def _acquire_inference() -> None:
+    global _active_inference, _waiting_inference
     loop = asyncio.get_running_loop()
-    semaphore = _inference_semaphores.get(loop)
-    if semaphore is None:
-        semaphore = asyncio.Semaphore(ML_MAX_CONCURRENT_INFERENCE)
-        _inference_semaphores[loop] = semaphore
-    return semaphore
+    deadline = loop.time() + ML_INFERENCE_QUEUE_TIMEOUT_SECONDS
+    with _inference_guard:
+        if _active_inference < ML_MAX_CONCURRENT_INFERENCE:
+            _active_inference += 1
+            return
+        if _waiting_inference >= ML_INFERENCE_MAX_WAITERS:
+            raise HTTPException(status_code=503, detail="ML inference capacity exhausted; retry later")
+        _waiting_inference += 1
+    try:
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise HTTPException(status_code=503, detail="ML inference capacity exhausted; retry later")
+            await asyncio.sleep(min(0.01, remaining))
+            with _inference_guard:
+                if _active_inference < ML_MAX_CONCURRENT_INFERENCE:
+                    _active_inference += 1
+                    return
+    finally:
+        with _inference_guard:
+            _waiting_inference -= 1
+
+
+def _release_inference(_future=None) -> None:
+    global _active_inference
+    with _inference_guard:
+        _active_inference -= 1
 
 
 def configure(
@@ -217,67 +252,64 @@ def configure(
     max_concurrent: int = ML_MAX_CONCURRENT_INFERENCE,
     max_workers: int = ML_INFERENCE_MAX_WORKERS,
     queue_timeout: float = ML_INFERENCE_QUEUE_TIMEOUT_SECONDS,
+    max_waiters: int = ML_INFERENCE_MAX_WAITERS,
+    inference_timeout: float = ML_INFERENCE_TIMEOUT_SECONDS,
 ) -> None:
-    """Rebuild the executor and semaphore with the given limits.
+    """Test/runtime configuration; retain admission for already-running workers.
 
-    Used by tests to exercise backpressure deterministically.  In-flight work
-    still holds a reference to the previous executor / semaphore and releases
-    safely, so replacing them never leaks capacity.
+    Replacing a pool does not discard old workers' occupied capacity. Native
+    completion releases it even if the caller's event loop has already closed.
     """
     global ML_MAX_CONCURRENT_INFERENCE, ML_INFERENCE_MAX_WORKERS
     global ML_INFERENCE_QUEUE_TIMEOUT_SECONDS, _inference_executor
+    global ML_INFERENCE_MAX_WAITERS, ML_INFERENCE_TIMEOUT_SECONDS
+    _validate_inference_limits(max_concurrent, max_workers, max_waiters,
+                               queue_timeout, inference_timeout)
+    max_workers = max(max_workers, max_concurrent)
+    replacement = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ml-inference")
+    with _inference_guard:
+        previous = _inference_executor
+        ML_MAX_CONCURRENT_INFERENCE = max_concurrent
+        ML_INFERENCE_MAX_WORKERS = max_workers
+        ML_INFERENCE_QUEUE_TIMEOUT_SECONDS = queue_timeout
+        ML_INFERENCE_MAX_WAITERS = max_waiters
+        ML_INFERENCE_TIMEOUT_SECONDS = inference_timeout
+        _inference_executor = replacement
+    previous.shutdown(wait=False, cancel_futures=False)
 
-    if max_workers < max_concurrent:
-        logger.warning("max_workers raised to %d to match max_concurrent", max_concurrent)
-        max_workers = max_concurrent
 
-    ML_MAX_CONCURRENT_INFERENCE = max_concurrent
-    ML_INFERENCE_MAX_WORKERS = max_workers
-    ML_INFERENCE_QUEUE_TIMEOUT_SECONDS = queue_timeout
-
-    _inference_executor.shutdown(wait=False, cancel_futures=False)
-    _inference_executor = ThreadPoolExecutor(
-        max_workers=max_workers,
-        thread_name_prefix="ml-inference",
-    )
-    _inference_semaphores.clear()
+def _consume_inference_result(future: "asyncio.Future") -> None:
+    # A disconnected/timed-out caller may no longer await a worker exception.
+    if not future.cancelled():
+        future.exception()
 
 
 async def run_inference(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Run ``func(*args, **kwargs)`` off the event loop under the concurrency cap.
+    """Bound native work and waiting requests across all process event loops.
 
-    The callable is executed on a worker thread so neither CPU-bound inference
-    nor blocking I/O (e.g. weather HTTP) can stall the event loop.
-
-    When no inference slot is free within ``ML_INFERENCE_QUEUE_TIMEOUT_SECONDS``
-    an ``HTTPException`` with status 503 is raised so the client can retry
-    instead of queueing requests indefinitely.  Capacity is always released
-    (also when the callable raises) and never leaked.
+    Overload is503; an admitted request exceeding the response deadline is504.
+    Neither timeout nor disconnect frees its capacity until native completion.
+    Python cannot kill an arbitrary worker thread; a permanently stuck worker
+    keeps its slot and causes bounded overload rather than unbounded submission.
     """
-    semaphore = _get_semaphore()
+    await _acquire_inference()
     try:
-        await asyncio.wait_for(
-            semaphore.acquire(),
-            timeout=ML_INFERENCE_QUEUE_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "Inference capacity exhausted (limit=%d); returning 503",
-            ML_MAX_CONCURRENT_INFERENCE,
-        )
-        raise HTTPException(
-            status_code=503,
-            detail="ML inference capacity exhausted; retry later",
-        )
-
-    loop = asyncio.get_running_loop()
+        with _inference_guard:
+            native = _inference_executor.submit(func, *args, **kwargs)
+    except BaseException:
+        _release_inference()
+        raise
+    native.add_done_callback(_release_inference)
+    future = asyncio.wrap_future(native)
+    future.add_done_callback(_consume_inference_result)
+    deadline = asyncio.timeout(ML_INFERENCE_TIMEOUT_SECONDS)
     try:
-        return await loop.run_in_executor(
-            _inference_executor,
-            lambda: func(*args, **kwargs),
-        )
-    finally:
-        semaphore.release()
+        async with deadline:
+            return await asyncio.shield(future)
+    except TimeoutError:
+        if not deadline.expired():
+            raise  # The callable's own TimeoutError is not our response deadline.
+        raise HTTPException(status_code=504, detail="ML inference response deadline exceeded") from None
 
 
 def inference_capacity() -> int:

@@ -116,3 +116,20 @@ docker compose up ml-engine -d
 # Verify Health
 curl http://localhost:8001/health
 ```
+
+### Inference response and admission limits
+
+Inference admission is process-wide, including overlapping event loops.
+`ML_MAX_CONCURRENT_INFERENCE` bounds submitted native work; worker count is raised
+to this limit when needed. `ML_INFERENCE_MAX_WAITERS` (default32) bounds waiting
+requests, and `ML_INFERENCE_QUEUE_TIMEOUT_SECONDS` (default5s) bounds their wait.
+Saturation returns503. `ML_INFERENCE_TIMEOUT_SECONDS` (default30s) bounds an
+admitted response and returns504. Callable failures retain their own exception
+semantics. All limits are validated at startup and during configuration.
+
+A disconnected/timed-out caller cannot release a still-running worker's slot.
+Native completion releases capacity, even after the caller's loop closes or a
+pool is replaced. Python threads are not killed on timeout: a permanently stuck
+callable retains capacity until completion/process replacement. This deliberately
+bounds further submission rather than promising that arbitrary computation stops.
+Training uses its separate bounded admission and cancellation/publication policy.
