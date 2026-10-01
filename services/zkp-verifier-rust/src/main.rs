@@ -172,7 +172,17 @@ fn route(method: &str, path: &str, body: &str) -> (&'static str, String) {
 }
 
 /// Reads one HTTP request and writes the response for a single connection.
-async fn handle_connection(mut stream: TcpStream) {
+async fn handle_connection(stream: TcpStream) {
+    handle_connection_with_deadline(stream, std::time::Duration::from_secs(30)).await;
+}
+
+async fn handle_connection_with_deadline(stream: TcpStream, deadline: std::time::Duration) {
+    // One total deadline covers headers, body and response writes. Cancellation
+    // drops the owned stream, releasing stalled connections.
+    let _ = tokio::time::timeout(deadline, process_connection(stream)).await;
+}
+
+async fn process_connection(mut stream: TcpStream) {
     let mut buf = Vec::with_capacity(4096);
     let mut chunk = [0u8; 4096];
 
@@ -255,6 +265,72 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
+
+    async fn connection_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        (client, server)
+    }
+
+    async fn assert_stalled_connection_closes(request: &[u8]) {
+        let (mut client, server) = connection_pair().await;
+        let handler = tokio::spawn(handle_connection_with_deadline(
+            server,
+            std::time::Duration::from_millis(50),
+        ));
+        client.write_all(request).await.unwrap();
+        let mut byte = [0u8; 1];
+        let read = tokio::time::timeout(std::time::Duration::from_secs(2), client.read(&mut byte))
+            .await
+            .expect("stalled connection must close at its deadline")
+            .unwrap();
+        assert_eq!(read, 0);
+        handler.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn closes_silent_connection_at_deadline() {
+        assert_stalled_connection_closes(b"").await;
+    }
+
+    #[tokio::test]
+    async fn closes_partial_headers_at_deadline() {
+        assert_stalled_connection_closes(b"GET /health HTTP/1.1\r\nHost: local").await;
+    }
+
+    #[tokio::test]
+    async fn closes_incomplete_body_at_deadline() {
+        assert_stalled_connection_closes(b"POST /verify HTTP/1.1\r\nContent-Length: 10\r\n\r\n{")
+            .await;
+    }
+
+    #[tokio::test]
+    async fn completes_health_request_before_deadline() {
+        let (mut client, server) = connection_pair().await;
+        let handler = tokio::spawn(handle_connection_with_deadline(
+            server,
+            std::time::Duration::from_secs(2),
+        ));
+        client
+            .write_all(b"GET /health HTTP/1.1\r\nHost: local\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.read_to_end(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(String::from_utf8(response)
+            .unwrap()
+            .starts_with("HTTP/1.1 200 OK"));
+        handler.await.unwrap();
+    }
 
     /// Test-only signing key whose public half matches the default verifying
     /// public key. Never shipped with the verifier in production.
