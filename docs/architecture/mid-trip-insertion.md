@@ -12,7 +12,7 @@ auxiliary arrays. The active recommender filters pickup deadlines and keeps one
 lexicographic minimum: extra distance, extra duration, pickup distance, pickup
 duration. It never retains both complete candidate lists. The list compatibility
 helper still returns all options in the previous enumeration order, requiring
-O(n²) output storage. Nonfinite relevant edges use the previous reconstruction
+O(n²) output storage. Nonfinite or overflow-risk relevant edges use the previous reconstruction
 algorithm, including its existing nonfinite arithmetic and storage costs.
 
 Floating-point addition order changes, so equivalence is numerical rather than

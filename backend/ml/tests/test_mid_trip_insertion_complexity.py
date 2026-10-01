@@ -43,7 +43,7 @@ def test_every_directed_option_matches_full_route_oracle(waypoints, seed):
     assert model._best_route_insertion_with_matrix(route, size - 2, size - 1, *matrices) == pytest.approx(min(expected), abs=1e-8)
 
 
-@pytest.mark.parametrize('value', [float('inf'), float('-inf'), float('nan')])
+@pytest.mark.parametrize('value', [float('inf'), float('-inf'), float('nan'), 1e308])
 def test_nonfinite_input_retains_full_route_arithmetic(value):
     matrix = [[1.0] * 4 for _ in range(4)]
     matrix[0][1] = value

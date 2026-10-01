@@ -1,5 +1,6 @@
 import logging
 import math
+import sys
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from itertools import pairwise
@@ -180,9 +181,9 @@ def _iter_route_insertion_options_with_matrix(
         to_dropoff = [matrix[a][dropoff_index] for a in base_route_indices]
         from_dropoff = [matrix[dropoff_index][a] for a in base_route_indices]
         pickup_dropoff = matrix[pickup_index][dropoff_index]
-        if not all(math.isfinite(value) for group in
-                   (edges, to_pickup, from_pickup, to_dropoff, from_dropoff, [pickup_dropoff])
-                   for value in group):
+        values = [value for group in (edges, to_pickup, from_pickup, to_dropoff, from_dropoff, [pickup_dropoff]) for value in group]
+        safe_edge = sys.float_info.max / max(6, route_length + 2)
+        if any(not math.isfinite(value) or abs(value) > safe_edge for value in values):
             yield from _legacy_route_insertion_options_with_matrix(
                 base_route_indices, pickup_index, dropoff_index,
                 distance_matrix, duration_matrix,
