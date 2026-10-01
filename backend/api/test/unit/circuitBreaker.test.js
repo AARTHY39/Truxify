@@ -67,7 +67,8 @@ describe('CircuitBreaker Unit Tests', () => {
       const fn = vi.fn().mockResolvedValue('success');
       const result = await cb.execute(fn, 'arg1');
       expect(result).toBe('success');
-      expect(fn).toHaveBeenCalledWith('arg1', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+      // The breaker appends { signal } so the call can be aborted on timeout (#11360).
+      expect(fn).toHaveBeenCalledWith('arg1', { signal: expect.any(AbortSignal) });
     });
 
     it('throws TypeError when fn is not a function', async () => {
