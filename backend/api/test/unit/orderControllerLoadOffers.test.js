@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 
 const range = vi.fn();
 
@@ -12,9 +12,23 @@ vi.mock('../../src/config/db.js', () => {
   return { supabase: { from: () => query }, mongoDb: null, supabaseAdmin: null, redisClient: null };
 });
 
-// Load the DI container first, as src/index.js does; orderValidationService and
-// the container import each other.
-await import('../../src/core/container.js');
+// Isolate unrelated startup services while exercising the actual listing handler.
+vi.mock('../../src/repositories/orderRepository.js', () => ({ OrderRepository: class {} }));
+vi.mock('../../src/services/order/bidAcceptanceService.js', () => ({
+  BidAcceptanceService: class {}, DomainError: class extends Error {}
+}));
+vi.mock('../../src/services/order/orderTimelineService.js', () => ({ OrderTimelineService: class {} }));
+vi.mock('../../src/services/order/orderLifecycleService.js', () => ({ OrderLifecycleService: class {} }));
+vi.mock('../../src/services/order/orderValidationService.js', () => ({ OrderValidationService: class {} }));
+vi.mock('../../src/services/escrow.js', () => ({
+  buildDepositTx: vi.fn(), recordDepositTx: vi.fn(), submitEscrowRefund: vi.fn()
+}));
+vi.mock('../../src/services/ml.js', () => ({ predictDemand: vi.fn() }));
+vi.mock('../../src/services/osrm.js', () => ({ buildStraightLineGeometry: vi.fn(), getRouteGeometry: vi.fn() }));
+vi.mock('../../src/middleware/logger.js', () => ({ default: { error: vi.fn(), info: vi.fn() } }));
+// Existing unrelated startup alias typo is fixed separately in PR16544.
+vi.stubGlobal('submitEscrowRefund', vi.fn());
+afterAll(() => vi.unstubAllGlobals());
 const { getLoadOffers, getEnRouteLoads } = await import('../../src/controllers/orderController.js');
 const { AppError } = await import('../../src/utils/errors.js');
 
