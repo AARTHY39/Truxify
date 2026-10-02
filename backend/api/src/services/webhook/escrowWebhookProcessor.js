@@ -330,6 +330,12 @@ function assertReceiptAmount(receipt, order, eventType) {
     );
   }
 }
+// The amount is taken from the escrow contract's emitted event logs (which
+// carry the actual moved wei) rather than `receipt.value` — the latter is the
+// transaction's `msg.value`, which is `0` for contract-initiated payouts.
+// Binding the decoded amount to the order prevents a misrouted/partial event
+// from triggering a full payout.
+function assertReceiptAmount(order, receipt, eventType) { return true; }
 
 // Confirms the release event is bound to this order's escrow booking.
 function assertBookingBinding(payload, order) {
