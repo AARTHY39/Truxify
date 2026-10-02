@@ -16,7 +16,7 @@ template BatchTelemetryTransition(N) {
     
     signal computedHashes[N];
     
-    // Verify each telemetry ping forms a valid state transition
+    // Verify each telemetry ping forms an individual hash
     component hashers[N];
     for (var i = 0; i < N; i++) {
         hashers[i] = PoseidonHash2();
@@ -25,13 +25,20 @@ template BatchTelemetryTransition(N) {
         computedHashes[i] <== hashers[i].out;
     }
     
-    // Ensure final transition matches our computed state
-    signal rootDiff;
-    rootDiff <== finalMerkleRoot - initialMerkleRoot;
+    // Sequentially fold/accumulate the computed hashes into a state-transition chain
+    signal runningRoots[N + 1];
+    runningRoots[0] <== initialMerkleRoot;
+
+    component accumulators[N];
+    for (var i = 0; i < N; i++) {
+        accumulators[i] = PoseidonHash2();
+        accumulators[i].inputs[0] <== runningRoots[i];
+        accumulators[i].inputs[1] <== computedHashes[i];
+        runningRoots[i + 1] <== accumulators[i].out;
+    }
     
-    // Add dummy constraint checking that rootDiff is at least bounded
-    signal dummy;
-    dummy <== rootDiff * rootDiff;
+    // Ensure the final accumulated root strictly matches the public finalMerkleRoot
+    finalMerkleRoot === runningRoots[N];
 }
 
 component main {public [initialMerkleRoot, finalMerkleRoot]} = BatchTelemetryTransition(4);
