@@ -596,8 +596,7 @@ router.get(
         const maxDistanceMeters = 50000; // 50km radius
         const nearbyTelemetry = await mongoDb.collection('telemetry').find({
           location: {
-            $near: {
-              $geometry: {
+            $near: {$geometry: {
                 type: "Point",
                 coordinates: [numPickupLng, numPickupLat]
               },
@@ -616,9 +615,6 @@ router.get(
       return res.json([]);
     }
 
-    // driver_details / trucks / profiles are RLS-protected with all anon
-    // privileges revoked, so the marketplace search must use the service-role
-    // client (scope is enforced by the search criteria, never the raw anon key).
     const { data: drivers, error: driversErr } = await supabaseAdmin
       .from('driver_details')
       .select('user_id, rating, total_trips, completion_rate, truck_id')
@@ -789,8 +785,6 @@ router.get('/:id/number', authenticate, userLimiter, validateParams(uuidParamSch
   }
 });
 
-// export default moved to end
-
 // ============================================================================
 // INTELLIGENT FUEL ADVISOR
 // ============================================================================
@@ -865,9 +859,7 @@ router.get('/:id/fuel-advisor', authenticate, userLimiter, validateParams(uuidPa
   }
 });
 
-// Resolves #2053: Prevent race conditions in truck allocation
-
 // ============================================================================
-// EXPORT ROUTER (MOVED TO END TO ENSURE ALL ENDPOINTS ARE REACHABLE - #14304)
+// EXPORT ROUTER (MOVED TO END TO ENSURE ALL ENDPOINTS ARE REACHABLE - #14303)
 // ============================================================================
 export default router;
