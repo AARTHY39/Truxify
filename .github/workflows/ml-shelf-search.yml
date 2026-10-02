@@ -7,6 +7,7 @@ on:
       - 'backend/ml/tests/test_shelf_fit_index.py'
       - 'backend/ml/tests/test_bin_packing_algo.py'
       - '.github/workflows/ml-shelf-search.yml'
+      - 'backend/ml/requirements.txt'
   workflow_dispatch:
 permissions:
   contents: read
@@ -24,7 +25,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install focused dependencies
-        run: python -m pip install pytest==9.1.1 numpy==2.5.3 fastapi==0.142.2 requests==2.34.2 ruff==0.16.9
+        run: python -m pip install pytest==9.0.3 numpy==1.26.4 fastapi==0.116.1 pydantic==2.11.1 requests==2.33.0 ruff==0.16.9
       - name: Verify placement compatibility and work bounds
         run: >-
           python -m pytest backend/ml/tests/test_shelf_fit_index.py
