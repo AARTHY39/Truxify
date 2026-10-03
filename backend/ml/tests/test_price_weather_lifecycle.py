@@ -186,10 +186,16 @@ def test_async_fetch_cannot_repopulate_reset_generation(monkeypatch, fail):
 
 def test_actual_price_predictions_share_weather_and_preserve_price_formula(monkeypatch):
     entered, release, calls = blocked_provider(monkeypatch)
-    monkeypatch.setattr(weather, "_model_is_real", lambda: True)
     model = SimpleNamespace(predict=lambda features: np.array([1000.0]))
     scaler = SimpleNamespace(transform=lambda features: features)
-    monkeypatch.setattr(weather, "load_model", lambda name: (model, scaler, {"delhi": 0}))
+    artifact = (model, scaler, {"delhi": 0})
+    if hasattr(weather, "load_model_snapshot"):
+        # Keep the weather seam compatible with paired consumer reads (#16937).
+        monkeypatch.setattr(weather, "load_model_snapshot", lambda name:
+            SimpleNamespace(model=artifact, metadata={"metrics": {"is_real_model": True}}))
+    else:
+        monkeypatch.setattr(weather, "_model_is_real", lambda: True)
+        monkeypatch.setattr(weather, "load_model", lambda name: artifact)
 
     def predict():
         return weather.predict_price(100, 1000, route_origin="Delhi", route_destination="Delhi")
