@@ -25,6 +25,9 @@ vi.mock('../../src/middleware/auth.js', () => ({
 }));
 
 vi.mock('../../src/config/db.js', () => ({
+  
+  redisClient: global.mockRedis,
+  upstashRedisClient: global.mockRedis,
   supabase: { from: vi.fn() },
 }));
 
@@ -187,8 +190,7 @@ describe('blockchainMonitoringRoutes', () => {
     const ROUTES_PATH = path.resolve(__dirname, '../../src/routes/blockchainMonitoringRoutes.js');
     const src = fs.readFileSync(ROUTES_PATH, 'utf8');
 
-    expect(src).toMatch(/const db = resolveSupabaseClient\(req\)/);
-    expect(src).toContain(".from('blockchain_monitoring_events')");
-    expect(src).toContain(".from('blockchain_escalations')");
+    expect(src).toMatch(/resolveSupabaseClient\(\s*req\s*\)\s*\.from\('blockchain_monitoring_events'\)/);
+    expect(src).toMatch(/resolveSupabaseClient\(\s*req\s*\)\s*\.from\('blockchain_escalations'\)/);
   });
 });
