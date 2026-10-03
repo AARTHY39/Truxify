@@ -48,3 +48,15 @@ The unchanged main persistence suite has three failing `TestModelIntegrity`
 assertions expecting old flat-file SHA256/rollback behavior. The same three fail on
 this branch; they are neither removed nor rewritten here. The focused workflow
 is a reader-lifetime regression gate, not a claim that the whole ML suite passes.
+
+## Mounted prediction consumers
+
+Price prediction now checks `is_real_model` on the metadata of its admitted
+artifact. Driver-profit loading obtains feature-domain metadata from the same
+snapshot as its regressor. Concurrent publication may change what a subsequent
+request admits, but cannot substitute another generation's real-data flag or
+feature bounds into an already loaded artifact. Seven consumer checks use real
+scikit-learn artifacts, including two controlled native publisher interleavings
+that failed with the old independent accessor calls. Missing/ineligible metadata
+retains the existing unavailable/retrain behavior. Weather and business feature
+validation are unchanged.
