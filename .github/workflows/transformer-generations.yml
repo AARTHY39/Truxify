@@ -5,6 +5,7 @@ on:
       - backend/ml/transformers/model.py
       - backend/ml/app/execution.py
       - backend/ml/tests/test_transformer_generations.py
+      - backend/ml/tests/test_transformers.py
       - tools/transformer-generation-tests/requirements.txt
       - .github/workflows/transformer-generations.yml
   workflow_dispatch:
@@ -29,7 +30,7 @@ jobs:
         env:
           PYTHONPATH: backend/ml
           OMP_NUM_THREADS: '1'
-        run: python -m pytest -q backend/ml/tests/test_transformer_generations.py
+        run: python -m pytest -q backend/ml/tests/test_transformer_generations.py backend/ml/tests/test_transformers.py -k "not pydantic_train_request_constraints"
       - name: Scoped analysis
         run: |
           python -m ruff check --select E9,F63,F7,F82 backend/ml/transformers/model.py

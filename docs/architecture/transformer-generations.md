@@ -36,3 +36,8 @@ also cover failure/cancellation, concurrent training state continuity, snapshot
 checkpoint ownership and actual transformer fit/validation/restore. The dedicated
 workflow installs Torch 2.8 from the official CPU wheel index and tests only these
 native operations, without optional GNN/provider dependencies.
+
+The focused gate also runs the three existing native transformer tests. Their
+route import is delayed until the request-schema test that needs it; that one
+route-registry test is explicitly deselected because it requires optional GNN
+dependencies. This does not disable the schema test in the full ML suite.
