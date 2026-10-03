@@ -18,10 +18,12 @@ const CLAIM_LEASE_MS =
   parseInt(process.env.OUTBOX_CLAIM_LEASE_MS, 10) || 5 * 60 * 1000;
 
 let _relayTimer = null;
+let _relayRun = null;
 let _running = false;
 let _workerId = null;
 
-async function relayOnce() {
+async function relayOnce(run) {
+  if (_relayRun !== run) return;
   if (_running) return;
   _running = true;
 
@@ -132,16 +134,20 @@ async function relayOnce() {
 
 export function startOutboxRelayWorker() {
   if (_relayTimer) return;
+  const run = {};
+  _relayRun = run;
   _workerId = getWorkerId();
   logger.info("[OutboxRelay] Starting outbox relay worker", {
     workerId: _workerId,
   });
-  _relayTimer = setInterval(relayOnce, RELAY_INTERVAL_MS);
+  _relayTimer = setInterval(() => relayOnce(run), RELAY_INTERVAL_MS);
   // Run immediately on start
-  relayOnce();
+  relayOnce(run);
 }
 
 export function stopOutboxRelayWorker() {
+  _relayRun = null;
+  // Retain _running until an already admitted native cycle actually settles.
   if (_relayTimer) {
     clearInterval(_relayTimer);
     _relayTimer = null;

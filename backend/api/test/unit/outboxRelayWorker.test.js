@@ -40,6 +40,8 @@ vi.mock("../../src/core/events/index.js", () => ({
   eventBus: mockEventBus,
 }));
 
+vi.mock("../../src/config/db.js", () => ({ supabase: null, supabaseAdmin: null }));
+
 const worker = await import("../../src/workers/outboxRelayWorker.js");
 
 describe("outboxRelayWorker", () => {
@@ -223,5 +225,66 @@ describe("outboxRelayWorker", () => {
 
     expect(mockOutboxService.markPublished).not.toHaveBeenCalledWith("evt-5");
     worker.stopOutboxRelayWorker();
+  });
+});
+
+
+describe("outbox relay polling generations", () => {
+  let callbacks;
+  const settle = async () => { for (let i = 0; i < 12; i += 1) await Promise.resolve(); };
+  beforeEach(async () => {
+    worker.stopOutboxRelayWorker();
+    await settle();
+    vi.clearAllMocks();
+    callbacks = [];
+    vi.spyOn(globalThis, "setInterval").mockImplementation(callback => {
+      callbacks.push(callback);
+      return { generation: callbacks.length };
+    });
+    vi.spyOn(globalThis, "clearInterval").mockImplementation(() => {});
+    mockOutboxService.deadLetterExhaustedEvents.mockResolvedValue(undefined);
+    mockOutboxService.claimBatch.mockResolvedValue([]);
+  });
+  afterEach(() => {
+    worker.stopOutboxRelayWorker();
+    vi.restoreAllMocks();
+  });
+  it("captured stopped callback cannot claim another batch", async () => {
+    worker.startOutboxRelayWorker();
+    await settle();
+    expect(mockOutboxService.claimBatch).toHaveBeenCalledTimes(1);
+    worker.stopOutboxRelayWorker();
+    await callbacks[0]();
+    await settle();
+    expect(mockOutboxService.claimBatch).toHaveBeenCalledTimes(1);
+  });
+  it("captured old callback cannot enter a restarted idle generation", async () => {
+    worker.startOutboxRelayWorker();
+    await settle();
+    worker.stopOutboxRelayWorker();
+    worker.startOutboxRelayWorker();
+    await settle();
+    expect(mockOutboxService.claimBatch).toHaveBeenCalledTimes(2);
+    await callbacks[0]();
+    await settle();
+    expect(mockOutboxService.claimBatch).toHaveBeenCalledTimes(2);
+    await callbacks[1]();
+    await settle();
+    expect(mockOutboxService.claimBatch).toHaveBeenCalledTimes(3);
+  });
+  it("retains admitted native batch through stop and restart", async () => {
+    let release;
+    mockOutboxService.claimBatch.mockReturnValueOnce(new Promise(resolve => { release = resolve; }));
+    worker.startOutboxRelayWorker();
+    await settle();
+    worker.stopOutboxRelayWorker();
+    worker.startOutboxRelayWorker();
+    await callbacks[1]();
+    expect(mockOutboxService.claimBatch).toHaveBeenCalledTimes(1);
+    release([]);
+    await settle();
+    await callbacks[1]();
+    await settle();
+    expect(mockOutboxService.claimBatch).toHaveBeenCalledTimes(2);
   });
 });

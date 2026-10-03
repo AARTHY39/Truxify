@@ -59,3 +59,15 @@ retry timing, configured duration, renewal, repeatable migration and internal
 role permissions. Dedicated GitHub CI runs these tests. Backend service/worker
 tests also cover RPC token forwarding, skipped stale dispatch, delivery errors,
 stable envelope identity and rejected acknowledgement reporting.
+
+
+## Polling lifecycle
+
+Each start owns its interval callbacks. Stop invalidates that generation, so a
+captured old callback cannot admit another database batch after stop or restart.
+The existing process-local running guard remains held until an admitted native
+cycle settles, including across stop/restart. Stop is synchronous and does not
+cancel or drain an already started batch; that batch retains exact-attempt
+database fencing. An indefinitely blocked native cycle continues to block local
+admission. Two stale-callback regressions fail on the old worker, and a third
+check preserves the existing non-overlap behavior through restart.
