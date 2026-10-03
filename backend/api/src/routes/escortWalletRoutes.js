@@ -8,6 +8,7 @@ const router = express.Router();
 
 const SUBJECT_RE = /^0x[a-fA-F0-9]+$/;
 
+// Only truck drivers/managers may perform a convoy compliance handshake
 const allowRoles = (...roles) => (req, res, next) => {
     if (!req.user || !roles.includes(req.user.role)) {
         return res.status(403).json({ error: 'Insufficient permissions for this action' });
@@ -15,6 +16,8 @@ const allowRoles = (...roles) => (req, res, next) => {
     next();
 };
 
+// Escort drivers load their certifications, insurance, and state permits.
+// Only the wallet owner (or an admin) may issue a credential for a subject.
 /**
  * @swagger
  * /api/escorts/wallet/credential:
@@ -191,10 +194,14 @@ router.post(
 
         next();
     },
+    // Only the escort driver themselves (for their own wallet address) or an
+    // administrator may issue a credential — never any authenticated user for
+    // an arbitrary subject.
     requirePolicy('escort:issue-credential', resolveCredentialSubject),
     loadCredential
 );
 
+// Truck drivers verify the entire convoy's legal compliance
 router.post(
     '/handshake',
     authenticate,
