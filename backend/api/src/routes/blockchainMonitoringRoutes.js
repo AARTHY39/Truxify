@@ -113,26 +113,6 @@ const router = express.Router();
  *           additionalProperties: true
  */
 
-// Canonical shared singleton fallback instances — ensure in-memory state
-// (escalation timers, alert maps) remains uniform across requests and tests.
-const blockchainMetrics = defaultBlockchainMetrics;
-const escalationHandler = defaultEscalationHandler;
-
-const resolveSupabaseClient = (req) => req.supabase ?? supabase;
-
-// The index.js mount attaches shared singletons and req.supabase =
-// supabaseAdmin (service-role key, bypasses RLS) so monitoring queries are
-// never limited to the anon client's rows. Only fall back to the router-local
-// instances when nothing else attached them (e.g. standalone/test mounts),
-// so a middleware-attached service is never silently overwritten.
-router.use((req, _res, next) => {
-  req.blockchainMetrics = req.blockchainMetrics || blockchainMetrics;
-  req.escalationHandler = req.escalationHandler || escalationHandler;
-  req.blockchainMetrics ??= blockchainMetrics;
-  req.escalationHandler ??= escalationHandler;
-  next();
-});
-
 /**
  * @swagger
  * /api/blockchain/health:
@@ -150,34 +130,6 @@ router.use((req, _res, next) => {
  *       '500':
  *         description: Failed to fetch monitor health.
  */
-router.get('/health', async (req, res) => {
-  try {
-    const monitor = req.blockchainMonitor;
-    if (!monitor) {
-      return res.json({
-        status: 'stopped',
-        running: false,
-        lastScannedBlock: 0,
-        currentChainHead: null,
-        blockLag: null,
-        lastSuccessfulScan: null,
-        lastError: null,
-      });
-    }
-
-    const health = await monitor.getHealth();
-    res.json({
-      timestamp: new Date().toISOString(),
-      ...health,
-    });
-  } catch (err) {
-    logger.error(
-      { requestId: req.requestId, event: 'BLOCKCHAIN_HEALTH_FETCH_ERROR', error: err.message },
-      'Error fetching monitor health'
-    );
-    res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
 
 /**
  * @swagger
@@ -202,23 +154,6 @@ router.get('/health', async (req, res) => {
  *       '500':
  *         description: Failed to fetch metrics.
  */
-router.get('/metrics', authenticate, requireRole(['admin', 'support']), async (req, res) => {
-  try {
-    // getMetrics() returns the metrics object directly (no { data, error }).
-    const metrics = req.blockchainMetrics.getMetrics();
-
-    res.json({
-      timestamp: new Date().toISOString(),
-      metrics,
-    });
-  } catch (err) {
-    logger.error(
-      { requestId: req.requestId, event: 'BLOCKCHAIN_METRICS_FETCH_ERROR', error: err.message },
-      'Error fetching metrics'
-    );
-    res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
 
 /**
  * @swagger
@@ -243,23 +178,6 @@ router.get('/metrics', authenticate, requireRole(['admin', 'support']), async (r
  *       '500':
  *         description: Failed to fetch active alerts.
  */
-router.get('/alerts/active', authenticate, requireRole(['admin', 'support']), async (req, res) => {
-  try {
-    const activeAlerts = await req.escalationHandler.getActiveAlerts();
-
-    res.json({
-      timestamp: new Date().toISOString(),
-      activeAlerts,
-      count: activeAlerts.length,
-    });
-  } catch (err) {
-    logger.error(
-      { requestId: req.requestId, event: 'BLOCKCHAIN_ACTIVE_ALERTS_FETCH_ERROR', error: err.message },
-      'Error fetching active alerts'
-    );
-    res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
 
 /**
  * @swagger
@@ -296,33 +214,6 @@ router.get('/alerts/active', authenticate, requireRole(['admin', 'support']), as
  *       '500':
  *         description: Failed to resolve alert.
  */
-router.post('/alerts/:alertId/resolve', authenticate, requireRole(['admin', 'support']), async (req, res) => {
-  try {
-    const { alertId } = req.params;
-
-    // Validate alertId format (prevent injection attacks)
-    if (!alertId || typeof alertId !== 'string' || alertId.length > 100 || !/^[a-zA-Z0-9_-]+$/.test(alertId)) {
-      return res.status(400).json({ error: 'Invalid alert ID format' });
-    }
-
-    const resolved = await req.escalationHandler.resolveAlert(alertId);
-
-    if (!resolved) {
-      return res.status(404).json({ error: 'Alert not found or already resolved' });
-    }
-
-    res.json({
-      message: 'Alert resolved successfully',
-      alertId,
-    });
-  } catch (err) {
-    logger.error(
-      { requestId: req.requestId, event: 'BLOCKCHAIN_ALERT_RESOLVE_ERROR', alertId: req.params.alertId, error: err.message },
-      'Error resolving alert'
-    );
-    res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
 
 /**
  * @swagger
@@ -385,6 +276,176 @@ router.post('/alerts/:alertId/resolve', authenticate, requireRole(['admin', 'sup
  *       '500':
  *         description: Failed to fetch events.
  */
+
+/**
+ * @swagger
+ * /api/blockchain/escalations/{alertId}:
+ *   get:
+ *     summary: Get escalation history for an alert
+ *     tags:
+ *       - Blockchain Monitoring
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: alertId
+ *         required: true
+ *         schema:
+ *           type: string
+ *           pattern: '^[a-zA-Z0-9_-]+$'
+ *           maxLength: 100
+ *     responses:
+ *       '200':
+ *         description: Escalation history.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/EscalationResponse'
+ *       '400':
+ *         description: Invalid alert ID.
+ *       '401':
+ *         description: Authentication required.
+ *       '403':
+ *         description: Admin or support role required.
+ *       '404':
+ *         description: Escalation not found.
+ *       '500':
+ *         description: Failed to fetch escalation.
+ */
+
+// Canonical shared singleton fallback instances — ensure in-memory state
+// (escalation timers, alert maps) remains uniform across requests and tests.
+const blockchainMetrics = defaultBlockchainMetrics;
+const escalationHandler = defaultEscalationHandler;
+
+const resolveSupabaseClient = (req) => req.supabase ?? supabase;
+
+// The index.js mount attaches shared singletons and req.supabase =
+// supabaseAdmin (service-role key, bypasses RLS) so monitoring queries are
+// never limited to the anon client's rows. Only fall back to the router-local
+// instances when nothing else attached them (e.g. standalone/test mounts),
+// so a middleware-attached service is never silently overwritten.
+router.use((req, _res, next) => {
+  req.blockchainMetrics = req.blockchainMetrics || blockchainMetrics;
+  req.escalationHandler = req.escalationHandler || escalationHandler;
+  req.blockchainMetrics ??= blockchainMetrics;
+  req.escalationHandler ??= escalationHandler;
+  next();
+});
+
+/**
+ * Get monitor health and block lag
+ * GET /api/blockchain/health
+ */
+router.get('/health', async (req, res) => {
+  try {
+    const monitor = req.blockchainMonitor;
+    if (!monitor) {
+      return res.json({
+        status: 'stopped',
+        running: false,
+        lastScannedBlock: 0,
+        currentChainHead: null,
+        blockLag: null,
+        lastSuccessfulScan: null,
+        lastError: null,
+      });
+    }
+
+    const health = await monitor.getHealth();
+    res.json({
+      timestamp: new Date().toISOString(),
+      ...health,
+    });
+  } catch (err) {
+    logger.error(
+      { requestId: req.requestId, event: 'BLOCKCHAIN_HEALTH_FETCH_ERROR', error: err.message },
+      'Error fetching monitor health'
+    );
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+/**
+ * Get current blockchain metrics
+ * GET /api/blockchain/metrics
+ */
+router.get('/metrics', authenticate, requireRole(['admin', 'support']), async (req, res) => {
+  try {
+    // getMetrics() returns the metrics object directly (no { data, error }).
+    const metrics = req.blockchainMetrics.getMetrics();
+
+    res.json({
+      timestamp: new Date().toISOString(),
+      metrics,
+    });
+  } catch (err) {
+    logger.error(
+      { requestId: req.requestId, event: 'BLOCKCHAIN_METRICS_FETCH_ERROR', error: err.message },
+      'Error fetching metrics'
+    );
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+/**
+ * Get active alerts with escalation status
+ * GET /api/blockchain/alerts/active
+ */
+router.get('/alerts/active', authenticate, requireRole(['admin', 'support']), async (req, res) => {
+  try {
+    const activeAlerts = await req.escalationHandler.getActiveAlerts();
+
+    res.json({
+      timestamp: new Date().toISOString(),
+      activeAlerts,
+      count: activeAlerts.length,
+    });
+  } catch (err) {
+    logger.error(
+      { requestId: req.requestId, event: 'BLOCKCHAIN_ACTIVE_ALERTS_FETCH_ERROR', error: err.message },
+      'Error fetching active alerts'
+    );
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+/**
+ * Resolve an active alert
+ * POST /api/blockchain/alerts/:alertId/resolve
+ */
+router.post('/alerts/:alertId/resolve', authenticate, requireRole(['admin', 'support']), async (req, res) => {
+  try {
+    const { alertId } = req.params;
+
+    // Validate alertId format (prevent injection attacks)
+    if (!alertId || typeof alertId !== 'string' || alertId.length > 100 || !/^[a-zA-Z0-9_-]+$/.test(alertId)) {
+      return res.status(400).json({ error: 'Invalid alert ID format' });
+    }
+
+    const resolved = await req.escalationHandler.resolveAlert(alertId);
+
+    if (!resolved) {
+      return res.status(404).json({ error: 'Alert not found or already resolved' });
+    }
+
+    res.json({
+      message: 'Alert resolved successfully',
+      alertId,
+    });
+  } catch (err) {
+    logger.error(
+      { requestId: req.requestId, event: 'BLOCKCHAIN_ALERT_RESOLVE_ERROR', alertId: req.params.alertId, error: err.message },
+      'Error resolving alert'
+    );
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+/**
+ * Get monitoring events with filtering
+ * GET /api/blockchain/events?type=PAYMENT_RECEIVED&severity=CRITICAL&limit=50
+ */
 router.get('/events', authenticate, requireRole(['admin', 'support']), async (req, res) => {
   try {
     const { type, severity, limit = '50' } = req.query;
@@ -422,7 +483,8 @@ router.get('/events', authenticate, requireRole(['admin', 'support']), async (re
       return res.status(400).json({ error: 'Invalid severity level' });
     }
 
-    let query = resolveSupabaseClient(req)
+    const db = resolveSupabaseClient(req) || req.supabase || supabase;
+    let query = db
       .from('blockchain_monitoring_events')
       .select('*')
       .order('created_at', { ascending: false })
@@ -461,39 +523,8 @@ router.get('/events', authenticate, requireRole(['admin', 'support']), async (re
 });
 
 /**
- * @swagger
- * /api/blockchain/escalations/{alertId}:
- *   get:
- *     summary: Get escalation history for an alert
- *     tags:
- *       - Blockchain Monitoring
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: alertId
- *         required: true
- *         schema:
- *           type: string
- *           pattern: '^[a-zA-Z0-9_-]+$'
- *           maxLength: 100
- *     responses:
- *       '200':
- *         description: Escalation history.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/EscalationResponse'
- *       '400':
- *         description: Invalid alert ID.
- *       '401':
- *         description: Authentication required.
- *       '403':
- *         description: Admin or support role required.
- *       '404':
- *         description: Escalation not found.
- *       '500':
- *         description: Failed to fetch escalation.
+ * Get escalation history for an alert
+ * GET /api/blockchain/escalations/:alertId
  */
 router.get('/escalations/:alertId', authenticate, requireRole(['admin', 'support']), async (req, res) => {
   try {
@@ -504,7 +535,8 @@ router.get('/escalations/:alertId', authenticate, requireRole(['admin', 'support
       return res.status(400).json({ error: 'Invalid alert ID format' });
     }
 
-    const { data: escalation, error } = await resolveSupabaseClient(req)
+    const db = resolveSupabaseClient(req) || req.supabase || supabase;
+    const { data: escalation, error } = await db
       .from('blockchain_escalations')
       .select('*')
       .eq('alert_id', alertId)
