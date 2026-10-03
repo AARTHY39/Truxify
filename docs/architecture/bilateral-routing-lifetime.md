@@ -1,21 +1,21 @@
 # Bilateral road matrix lifetime
 
 The mounted `/match/bilateral` consumer tiles driver-source/load-destination
-coordinates into at most100coordinates per OSRM table request. It restores
+coordinates into at most 100 coordinates per OSRM table request. It restores
 cells to their original indices and does not change the assignment objective.
-A60x60batch uses four bounded tables instead of a single120coordinate request.
+A 60×60 batch uses four bounded tables instead of a single 120-coordinate request.
 Asymmetric cases use the available coordinate budget for the larger side.
 
-One optional matrix has at most1,000,000cells; larger requests retain the
+One optional matrix has at most 1,000,000 cells; larger requests retain the
 existing geometric fallback without allocating a road matrix or contacting
 OSRM. This cap applies only to optional routing, not solver/request capacity.
 
-A successful tile's explicitnull denotes an unreachable pair. Invalid numeric
+A successful tile's explicit `null` denotes an unreachable pair. Invalid numeric
 cells remain infeasible (including negative, nonfinite, boolean or oversized
 integers). A failed transport/shape/status tile uses an internal unknown marker,
 so only those cells use the existing geometric fallback. Successful road cells
 survive partial failure and keep their original deadline behavior. All unknown
-returns the legacyNone matrix result. OSRM disable configuration is preserved.
+returns the legacy `None` matrix result. OSRM disable configuration is preserved.
 
 ## Resource limits
 
@@ -24,11 +24,11 @@ Four process-local native provider slots have no executor queue. Native future
 settlement releases its captured admission owner; caller timeout is not proof
 that Requests/socket/body work finished. A stuck provider keeps its slot and
 new optional lookups fall back promptly. Requests' native connect/read timeout
-is capped at1.5seconds and the remaining caller budget; it cannot kill arbitrary
+is capped at 1.5 seconds and the remaining caller budget; it cannot kill arbitrary
 Python code or guarantee instantaneous socket teardown. There is no request
 cancellation, cross-process provider quota or exactly-once external effect.
 
-Response bodies are streamed and capped at256KiB after decompression. Declared
+Response bodies are streamed and capped at 256 KiB after decompression. Declared
 oversized bodies are rejected before reading; chunk reads also enforce the cap
 and monotonic deadline. Every acquired response is closed in finally. Native
 JSON parsing or socket reads can outlive the caller; their admission remains
@@ -47,7 +47,7 @@ ruff check --select E9,F63,F7,F82 backend/ml/app/models/bilateral_matcher.py bac
 
 Native loopback HTTP tests execute actual Requests, geographic/deadline costs
 and the actual SciPy matcher. They cover rectangular index reconstruction,
-100coordinate limits, partial failure versus unreachable, total trickle-body
+100-coordinate limits, partial failure versus unreachable, total trickle-body
 budget, four unfinished native calls after caller expiry, allocation/byte caps
 and response cleanup. Existing mocked provider fixtures now expose the bounded
 streaming interface; their original expected deadline/unreachable behavior is
