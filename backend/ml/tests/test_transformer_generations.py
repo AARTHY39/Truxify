@@ -96,6 +96,7 @@ def test_failed_load_preserves_serving_pair(broken, tmp_path):
     x, y = data()
     subject.train(x, y, epochs=1, batch_size=2)
     old_model, old_optimizer = subject.model, subject.optimizer
+    before = subject.predict(x).copy()
     path = tmp_path / 'invalid.pth'
     replacement = trainer()
     replacement.train(x, y, epochs=2, batch_size=2)
@@ -104,6 +105,7 @@ def test_failed_load_preserves_serving_pair(broken, tmp_path):
     torch.save(state, path)
     with pytest.raises((RuntimeError, KeyError, ValueError)):
         subject.load(path)
+    np.testing.assert_allclose(subject.predict(x), before)
     assert subject.model is old_model
     assert subject.optimizer is old_optimizer
 
