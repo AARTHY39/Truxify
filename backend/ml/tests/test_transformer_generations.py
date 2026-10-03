@@ -193,3 +193,40 @@ def test_actual_demand_transformer_training_validation_checkpoint(tmp_path):
     subject.train_step(x, y)
     subject.load(path)
     np.testing.assert_allclose(subject.predict(x), expected)
+
+
+def test_actual_timed_out_native_training_never_publishes():
+    import asyncio
+
+    subject = trainer()
+    x, y = data()
+    before = subject.predict(x).copy()
+    old_model, old_optimizer = subject.model, subject.optimizer
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    native_loss = subject.criterion
+    def paused_loss(prediction, target):
+        entered.set()
+        assert release.wait(10)
+        return native_loss(prediction, target)
+    subject.criterion = paused_loss
+    def train_to_completion():
+        try:
+            return subject.train(x, y, epochs=1, batch_size=2)
+        finally:
+            finished.set()
+    async def expire_caller():
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                await execution.run_training_job('transformer-native-cancel-test', train_to_completion, timeout=.05)
+            assert entered.is_set()
+            assert not finished.is_set()
+            np.testing.assert_allclose(subject.predict(x), before)
+        finally:
+            release.set()
+        async with asyncio.timeout(10):
+            while not finished.is_set():
+                await asyncio.sleep(.001)
+    asyncio.run(expire_caller())
+    assert subject.model is old_model
+    assert subject.optimizer is old_optimizer
+    np.testing.assert_allclose(subject.predict(x), before)
