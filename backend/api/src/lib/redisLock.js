@@ -341,18 +341,31 @@ class RedisLock {
   }
 
   async connect() {
+    if (!this.client) {
+      logger.warn('[RedisLock] Client not initialized, skipping connect');
+      return;
+    }
     if (!this.client.isOpen) {
       await this.client.connect();
     }
   }
 
   async disconnect() {
+    if (!this.client) return;
     if (this.client.isOpen) {
       await this.client.disconnect();
     }
   }
 
   async acquire(lockName, owner, ttl = this.defaultTtl) {
+    if (!this.client) {
+      return {
+        success: false,
+        lockKey: `lock:${lockName}`,
+        owner,
+        message: 'Redis client not initialized',
+      };
+    }
     await this.connect();
     
     const lockKey = `lock:${lockName}`;
@@ -386,6 +399,13 @@ class RedisLock {
   }
 
   async release(lockName, owner) {
+    if (!this.client) {
+      return {
+        success: false,
+        lockKey: `lock:${lockName}`,
+        message: 'Redis client not initialized',
+      };
+    }
     await this.connect();
     
     const lockKey = `lock:${lockName}`;
@@ -403,6 +423,9 @@ class RedisLock {
   }
 
   async extend(lockName, owner, additionalTtl) {
+    if (!this.client) {
+      return { success: false, message: 'Redis client not initialized' };
+    }
     await this.connect();
     
     const lockKey = `lock:${lockName}`;
@@ -423,3 +446,4 @@ class RedisLock {
 
 export default RedisLock;
 
+import crypto from 'crypto';

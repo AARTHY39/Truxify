@@ -175,6 +175,10 @@ describe('routingService - optimizeWaypoints', () => {
     expect(callUrl).toContain('78,14');
     expect(callUrl).toContain('79,15');
     expect(callUrl).toContain('80.27,13.08');
+    expect(callUrl).toContain('77.59,12.97'); // start: lng,lat
+    expect(callUrl).toContain('78,14');        // WP1: lng,lat
+    expect(callUrl).toContain('79,15');        // WP2: lng,lat
+    expect(callUrl).toContain('80.27,13.08'); // end: lng,lat
     expect(callUrl).toContain('/trip/v1/driving/');
   });
 });
