@@ -295,7 +295,6 @@ function sentryAlertHandler(limiterName) {
 // key by IP; kept generous so that legitimate users sharing a NAT'd IP are not
 // throttled by each other. Per-user fairness is enforced by userLimiter once
 // the request is authenticated.
-// Configurable rate limiter settings (defaults preserve existing behaviour)
 const GLOBAL_WINDOW_MS =
   Number(process.env.GLOBAL_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000;
 const GLOBAL_MAX_REQUESTS =
@@ -448,9 +447,6 @@ const POD_WINDOW_MS =
   Number(process.env.POD_RATE_LIMIT_WINDOW_MS) || 60 * 60 * 1000;
 const POD_MAX_REQUESTS = Number(process.env.POD_RATE_LIMIT_MAX_REQUESTS) || 10;
 
-// PoD uploads carry up to 20MB each (signature + photo) and run a malware scan
-// per file, so they are throttled per driver *and* per order: a single assigned
-// driver can no longer fire an unbounded stream of uploads for one order.
 export const podUploadLimiter = rateLimit({
   windowMs: POD_WINDOW_MS,
   max: POD_MAX_REQUESTS,
@@ -483,14 +479,11 @@ export const podUploadLimiter = rateLimit({
   },
 });
 
-
 const VERIFY_DELIVERY_WINDOW_MS =
   Number(process.env.VERIFY_DELIVERY_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000;
 const VERIFY_DELIVERY_MAX_REQUESTS =
   Number(process.env.VERIFY_DELIVERY_RATE_LIMIT_MAX_REQUESTS) || 10;
 
-// Delivery-OTP confirmation is a brute-force target, so it is throttled per
-// authenticated user with a strict cap.
 export const verifyDeliveryLimiter = rateLimit({
   windowMs: VERIFY_DELIVERY_WINDOW_MS,
   max: VERIFY_DELIVERY_MAX_REQUESTS,
@@ -511,8 +504,6 @@ const RESEND_OTP_WINDOW_MS =
 const RESEND_OTP_MAX_REQUESTS =
   Number(process.env.RESEND_OTP_RATE_LIMIT_MAX_REQUESTS) || 5;
 
-// OTP resend is an abuse vector (SMS flooding / OTP brute-forcing), so it gets
-// the strictest per-user cap alongside the existing otpVerificationLimiter.
 export const resendOtpLimiter = rateLimit({
   windowMs: RESEND_OTP_WINDOW_MS,
   max: RESEND_OTP_MAX_REQUESTS,
@@ -549,8 +540,6 @@ const PREDICT_DEMAND_WINDOW_MS =
 const PREDICT_DEMAND_MAX_REQUESTS =
   Number(process.env.PREDICT_DEMAND_RATE_LIMIT_MAX_REQUESTS) || 60;
 
-// Demand prediction runs a ML model per request, so it is capped to a low
-// hourly budget per user to keep the inference service safe from abuse.
 export const predictDemandLimiter = rateLimit({
   windowMs: PREDICT_DEMAND_WINDOW_MS,
   max: PREDICT_DEMAND_MAX_REQUESTS,
@@ -570,8 +559,6 @@ const TELEMETRY_WINDOW_MS =
 const TELEMETRY_MAX_REQUESTS =
   Number(process.env.TELEMETRY_RATE_LIMIT_MAX_REQUESTS) || 300;
 
-// Driver-location and route reads are polled frequently while tracking a
-// shipment, so the cap is generous but still bounded per authenticated user.
 export const telemetryLimiter = rateLimit({
   windowMs: TELEMETRY_WINDOW_MS,
   max: TELEMETRY_MAX_REQUESTS,
@@ -641,4 +628,3 @@ export const slidingWindowRateLimiter = (options = {}) => {
 };
 
 export default slidingWindowRateLimiter;
-
