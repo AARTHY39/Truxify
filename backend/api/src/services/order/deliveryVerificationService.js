@@ -9,6 +9,7 @@ import {
   getActiveDeliveryOtp,
   verifyDeliveryOtp,
   verifyDeliveryOtpHash,
+  expireDeliveryOtps,
   sendPushNotification,
 } from "../notificationService.js";
 import {
@@ -64,6 +65,7 @@ export class DeliveryVerificationService {
       getActiveDeliveryOtp,
       verifyDeliveryOtp,
       verifyDeliveryOtpHash,
+      expireDeliveryOtps,
     };
     this.escrowReleaseFn = deps.escrowReleaseFn || defaultEscrowRelease;
     this.trackingTokenService = deps.trackingTokenService || null;
@@ -229,6 +231,11 @@ export class DeliveryVerificationService {
 
         const activeOtp =
           await this.notificationService.getActiveDeliveryOtp(orderId);
+        // A resend must not issue another usable code if invalidating the
+        // previous one failed. Keep the existing failure budget on resends.
+        if (!(await this.notificationService.expireDeliveryOtps(orderId))) {
+          throw new Error("Failed to invalidate previous delivery OTPs.");
+        }
         const otp = crypto.randomInt(100000, 1000000).toString();
         const stored = await this.notificationService.storeDeliveryOtp(
           orderId,
@@ -465,7 +472,10 @@ export class DeliveryVerificationService {
     const distanceM =
       haversineKm(lat, lng, Number(order.drop_lat), Number(order.drop_lng)) *
       1000;
-    const effectiveRadiusM = radiusM ?? DELIVERY_GEOFENCE_RADIUS_KM * 1000;
+    const effectiveRadiusM =
+      Number.isFinite(radiusM) && radiusM > 0
+        ? radiusM
+        : DELIVERY_GEOFENCE_RADIUS_KM * 1000;
     if (distanceM > effectiveRadiusM) {
       throw new DomainError(409, {
         error: `Driver is ${(distanceM / 1000).toFixed(2)}km from the drop-off location. Must be within ${effectiveRadiusM}m to confirm delivery.`,
@@ -552,9 +562,12 @@ export class DeliveryVerificationService {
           }
 
           try {
+            const idempotencyKeyStr = crypto.createHash('sha256').update(`${orderId}-${otp}`).digest('hex');
+            const idempotencyKeyBytes32 = '0x' + idempotencyKeyStr;
             const releaseResult = await this.escrowReleaseFn(
               order.order_display_id,
               expectedAmountWei,
+              idempotencyKeyBytes32
             );
             if (releaseResult.txHash) {
               releaseTxHash = releaseResult.txHash;
