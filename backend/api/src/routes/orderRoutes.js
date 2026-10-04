@@ -204,14 +204,28 @@ import {
 } from '../controllers/orderController.js';
 import { getRouteEstimate, getRouteGeometry, buildStraightLineGeometry } from '../services/osrm.js';
 import { computeOrderPricing } from '../lib/pricing.js';
+import {
+  validatePodFile,
+  generatePodStoragePath,
+  uploadPodFile,
+  createPodSignedUrl
+} from '../lib/storage/podStorage.js';
 import { escrowLockManager } from '../lib/escrow/escrowLockManager.js';
 
 const router = express.Router();
 const MAX_GEOFENCE_RADIUS_M = 500;
 
+const injectOtpIdempotencyKey = (req, res, next) => {
+  if (req.body && req.body.otp && req.params.id) {
+    const otpHash = crypto.createHash('sha256').update(String(req.body.otp).trim()).digest('hex');
+    req.headers['x-idempotency-key'] = `${req.params.id}-${otpHash}`;
+  }
+  next();
+};
+
 const milestoneStore = createStore('rl:milestone:');
 const milestoneLimiter = rateLimit({
-  windowMs: 60 * 1000,
+  windowMs: 60 * 1000, 
   max: process.env.NODE_ENV === 'test' ? 1000 : 5,
   keyGenerator: (req) => req.user?.id || 'unknown',
   ...(milestoneStore && typeof milestoneStore.init === 'function' ? { store: milestoneStore } : {}),
@@ -220,6 +234,9 @@ const milestoneLimiter = rateLimit({
   message: { error: 'Too many milestone updates. Please slow down.' },
 });
 
+
+// 1. CREATE ORDER (CUSTOMER)
+router.post('/', authenticate, userLimiter, requirePolicy('order:create'), validateBody(createOrderSchema), createOrder);
 
 // 2. FETCH MY ACTIVE ORDERS (CUSTOMER)
 router.get('/my/active', authenticate, userLimiter, requireRole(['customer']), getActiveOrders);
@@ -397,7 +414,7 @@ router.get('/load-offers/en-route', authenticate, userLimiter, requirePolicy('lo
  *       429:
  *         description: Rate limited
  */
-router.post('/:id/verify-delivery', authenticate, userLimiter, requirePolicy('delivery:verify'), auditLog({ action: 'delivery:verify', resourceType: 'delivery_verification' }), verifyDeliveryLimiter, requireIdempotency(86400), validateParams(paramIdSchema), validateBody(verifyDeliverySchema), async (req, res) => {
+router.post('/:id/verify-delivery', authenticate, userLimiter, requirePolicy('delivery:verify'), auditLog({ action: 'delivery:verify', resourceType: 'delivery_verification' }), verifyDeliveryLimiter, injectOtpIdempotencyKey, requireIdempotency(86400), validateParams(paramIdSchema), validateBody(verifyDeliverySchema), async (req, res) => {
   try {
     const { escrowUpdateFailed } = await orderLifecycleService.verifyDeliveryFn(req.params.id, req.user.id, req.body.otp, req.token ? createUserClient(req.token) : undefined);
 
@@ -447,12 +464,11 @@ router.post('/:id/verify-delivery', authenticate, userLimiter, requirePolicy('de
  *         application/json:
  *           schema:
  *             type: object
- *             required: [driver_lat, driver_lng]
- *             properties:
- *               driver_lat:
- *                 type: number
- *               driver_lng:
- *                 type: number
+ *             required: []
+         properties:
+        geofence_radius_m:
+    type: number
+    description: Override default 500m geofence radius
  *               geofence_radius_m:
  *                 type: number
  *                 description: Override default 500m geofence radius
@@ -470,53 +486,114 @@ router.post(
   validateParams(paramIdSchema),
   async (req, res) => {
     try {
-      const { driver_lat, driver_lng, geofence_radius_m } = req.body;
-
-      if (!driver_lat || !driver_lng) {
-        return res.status(400).json({ error: 'driver_lat and driver_lng are required.' });
-      }
-
-      const lat = parseFloat(driver_lat);
-      const lng = parseFloat(driver_lng);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-        return res.status(400).json({ error: 'driver_lat and driver_lng must be valid numbers.' });
-      }
+      const { geofence_radius_m } = req.body;
 
       let geofenceRadiusM = 500;
-      if (geofence_radius_m !== undefined && geofence_radius_m !== null && geofence_radius_m !== '') {
+
+      if (
+        geofence_radius_m !== undefined &&
+        geofence_radius_m !== null &&
+        geofence_radius_m !== ''
+      ) {
         const parsedRadius = parseFloat(geofence_radius_m);
-        if (!Number.isFinite(parsedRadius) || parsedRadius <= 0 || parsedRadius > MAX_GEOFENCE_RADIUS_M) {
-          return res.status(400).json({ error: `geofence_radius_m must be between 0 and ${MAX_GEOFENCE_RADIUS_M} meters.` });
+
+        if (
+          !Number.isFinite(parsedRadius) ||
+          parsedRadius <= 0 ||
+          parsedRadius > MAX_GEOFENCE_RADIUS_M
+        ) {
+          return res.status(400).json({
+            error: `geofence_radius_m must be between 0 and ${MAX_GEOFENCE_RADIUS_M} meters.`,
+          });
         }
+
         geofenceRadiusM = parsedRadius;
       }
 
       if (!req.params.id || !req.params.id.trim()) {
-        return res.status(400).json({ error: 'Invalid order id' });
+        return res.status(400).json({
+          error: 'Invalid order id',
+        });
       }
 
       const order = await orderValidationService.findOrderByIdOrDisplayId(
         req.params.id,
         'id, driver_id, customer_id'
       );
+
       orderValidationService.assertOrderFound(order);
       orderValidationService.assertDriverAssignment(order, req.user.id);
 
-      const result = await orderLifecycleService.deliveryVerification.geofenceAutoConfirm({
-        orderId: order.id,
-        driverId: req.user.id,
-        driverLat: lat,
-        driverLng: lng,
-        geofenceRadiusM,
-      });
+      if (!mongoDb) {
+        return res.status(503).json({
+          error: 'Telemetry database not available.',
+        });
+      }
+
+      const latestTelemetry = await mongoDb
+        .collection('telemetry')
+        .find({
+          driver_id: order.driver_id,
+          order_id: order.id,
+        })
+        .sort({ timestamp: -1 })
+        .limit(1)
+        .toArray();
+
+      if (!latestTelemetry || latestTelemetry.length === 0) {
+        return res.status(404).json({
+          error: 'No live telemetry found for this driver.',
+        });
+      }
+
+      const telemetry = latestTelemetry[0];
+
+      const lat = Number(telemetry.lat);
+      const lng = Number(telemetry.lng);
+
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return res.status(404).json({
+          error: 'Latest telemetry record contains invalid coordinates.',
+        });
+      }
+
+      const telemetryTime = new Date(telemetry.timestamp).getTime();
+      const telemetryAge = Date.now() - telemetryTime;
+      const MAX_TELEMETRY_AGE_MS = 5 * 60 * 1000;
+
+      if (
+        !Number.isFinite(telemetryTime) ||
+        telemetryAge < 0 ||
+        telemetryAge > MAX_TELEMETRY_AGE_MS
+      ) {
+        return res.status(409).json({
+          error: 'Driver location is not recent enough for geofence confirmation.',
+        });
+      }
+
+      const result =
+        await orderLifecycleService.deliveryVerification.geofenceAutoConfirm({
+          orderId: order.id,
+          driverId: req.user.id,
+          driverLat: lat,
+          driverLng: lng,
+          geofenceRadiusM,
+        });
 
       return res.json(result);
     } catch (err) {
       if (err instanceof DomainError) {
         return res.status(err.status).json(err.payload);
       }
-      logger.error('Geofence auto-confirm exception:', err.message);
-      return res.status(500).json({ error: 'Internal Server Error' });
+
+      logger.error(
+        'Geofence auto-confirm exception:',
+        err.message
+      );
+
+      return res.status(500).json({
+        error: 'Internal Server Error',
+      });
     }
   }
 );
@@ -531,7 +608,7 @@ router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), get
 // Friendly alias of /:id/verify-delivery for the driver app. It accepts the
 // same body { otp } and delegates to the identical pipeline so the driver's
 // Confirm Delivery flow can release the escrow and credit the wallet.
-router.post('/:id/confirm-otp', authenticate, userLimiter, requireRole(['driver']), verifyDeliveryLimiter, requireIdempotency(86400), validateParams(paramIdSchema), validateBody(verifyDeliverySchema), verifyDeliveryController);
+router.post('/:id/confirm-otp', authenticate, userLimiter, requireRole(['driver']), verifyDeliveryLimiter, injectOtpIdempotencyKey, requireIdempotency(86400), validateParams(paramIdSchema), validateBody(verifyDeliverySchema), verifyDeliveryController);
 
 // 14. RESEND DELIVERY OTP (DRIVER)
 router.post('/:id/resend-otp', authenticate, userLimiter, resendOtpLimiter, requireRole(['driver']), validateParams(paramIdSchema), resendOtp);
@@ -570,21 +647,16 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
   const { txHash } = req.body;
 
   const lockKey = `escrow_lock:${orderId}`;
-  const lock = await acquireLockOrFallback(lockKey, 120000);
-  if (!lock.ok) {
-    return res.status(409).json({ error: 'Another deposit confirmation is in progress for this order. Please try again.' });
-  }
-
   let lockValue = null;
   try {
-    // acquireLock throws LockAcquisitionError when Redis is unavailable and
-    // returns null when the lock is already held by another request.
+    // Financial mutations require the distributed lock. A local fallback
+    // cannot exclude another API instance when Redis is unavailable.
     lockValue = await acquireLock(lockKey, 120000);
     if (!lockValue) {
       return res.status(409).json({ error: 'Another deposit confirmation is in progress for this order. Please try again.' });
     }
 
-    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, status, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet, pending_bid_acceptance, total_amount');
+    const order = await orderValidationService.findOrderByIdOrDisplayId(orderId, 'id, status, order_display_id, customer_id, escrow_booking_id, escrow_status, escrow_amount_wei, escrow_driver_wallet, pending_bid_acceptance, total_amount, version');
     orderValidationService.assertOrderFound(order);
     orderValidationService.assertCustomerOwnership(order, req.user.id);
     orderValidationService.assertEscrowState(order, ['funding'], 'Order is not in funding state');
@@ -704,25 +776,32 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
       expectedAmountWei
     );
 
-    if (result.alreadyFunded) {
-      const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
-        escrow_status: 'funded',
-      }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
+    if (result.error) {
+      return res.status(422).json({ error: result.error, code: result.code });
+    }
 
+    const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(
+      orderId,
+      {
+        escrow_status: 'funded',
+        escrow_funding_error: null,
+        version: (order.version || 0) + 1,
+        updated_at: new Date().toISOString(),
+      },
+      [
+        { op: 'eq', column: 'escrow_status', value: 'funding' },
+        { op: 'eq', column: 'version', value: order.version },
+      ],
+      'id'
+    );
+
+    if (result.alreadyFunded) {
       if (!updateErr && updatedData) {
         await finalizeAcceptance();
         return res.json({ message: 'Escrow deposit confirmed (recovered).', txHash: result.txHash });
       }
       return res.status(202).json({ message: 'Escrow deposit confirmed on-chain. Database sync pending.', txHash: result.txHash });
     }
-
-    if (result.error) {
-      return res.status(422).json({ error: result.error, code: result.code });
-    }
-
-    const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(orderId, {
-      escrow_status: 'funded',
-    }, [{ op: 'eq', column: 'escrow_status', value: 'funding' }], 'id');
 
     if (updateErr) {
       logger.error('[confirm-deposit] DB update failed:', updateErr.message);
@@ -739,7 +818,6 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
     res.json({ message: 'Escrow deposit confirmed', txHash: result.txHash });
   } catch (err) {
     if (err instanceof LockAcquisitionError) {
-      // Redis is down — do NOT proceed with the deposit mutation.
       logger.error('[confirm-deposit] Redis unavailable — refusing deposit confirmation:', err.message);
       return res.status(503).json({ error: 'Payment service temporarily unavailable. Please retry in a moment.' });
     }
@@ -750,83 +828,12 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
     return res.status(500).json({ error: 'Internal Server Error' });
   } finally {
     if (lockValue) {
-      await releaseLock(lockKey, lockValue).catch(() => {});
-    }
-    if (lock && typeof lock.release === 'function') {
-      await lock.release().catch(() => {});
+      await releaseLock(lockKey, lockValue).catch((releaseErr) => {
+        logger.error('[confirm-deposit] Failed to release order lock:', releaseErr.message);
+      });
     }
   }
-}); 
-router.post('/:id/confirm-deposit', authenticate, async (req, res, next) => {
-     const orderId = req.params.id;
-     
-     try {
-       const result = await escrowLockManager.withLock(orderId, async (ctx) => {
-         // SINGLE READ - no more duplicate readOrder() calls
-         const { data: order, error } = await orderRepository.findOrderById(orderId);
-         if (error || !order) {
-           throw new DomainError(404, { error: 'Order not found' });
-         }
-         
-         // Resolve expected deposit amount once
-         const expectedAmount = resolveExpectedDepositAmount(order);
-         
-         // Transition to confirming state
-         const transitionResult = await ctx.transition('confirming');
-         if (!transitionResult.success) {
-           throw new DomainError(409, { error: 'Invalid state transition' });
-         }
-         
-         // Verify on-chain deposit
-         const depositTx = await recordDepositTx(order, expectedAmount);
-         
-         try {
-           // Execute acceptance RPC (may take time)
-           await finalizeAcceptance(order, depositTx);
-           
-           // Transition to funded
-           await ctx.transition('funded');
-           
-           // Update DB atomically
-           await orderRepository.updateOrder(orderId, {
-             escrow_status: 'funded',
-             deposit_tx_hash: depositTx.hash
-           });
-           
-           return { success: true, txHash: depositTx.hash };
-         } catch (rpcError) {
-           // EXTEND LOCK for refund processing
-           await ctx.extend();
-           
-           // Transition to refund_pending
-           await ctx.transition('refund_pending');
-           
-           // Execute refund WHILE HOLDING LOCK
-           const refundResult = await submitEscrowRefund(orderId, depositTx);
-           
-           // Transition to refunded
-           await ctx.transition('refunded');
-           
-           await orderRepository.updateOrder(orderId, {
-             escrow_status: 'refunded',
-             refund_tx_hash: refundResult.txHash
-           });
-           
-           throw new DomainError(500, { 
-             error: 'Acceptance failed, refund processed',
-             refundTxHash: refundResult.txHash 
-           });
-         }
-       }, { 
-         expectedState: 'funding',
-         targetState: 'confirming'
-       });
-       
-       res.json(result);
-     } catch (err) {
-       next(err);
-     }
-   });
+});
 
 
 //  ============================================================================
@@ -1287,5 +1294,35 @@ router.post('/:id/ratings', authenticate, userLimiter, requirePolicy('order:subm
     return res.status(500).json({ error: 'Internal Server Error.' });
   }
 });
+router.post(
+  '/:id/bids',
+  authenticate,
+  userLimiter,
+  requirePolicy('bid:submit'),
+  bidLimiter,
+  validateParams(paramIdSchema),
+  validateBody(submitBidSchema),
+  async (req, res) => {
+    try {
+      const { amount, bid_amount } = req.body;
+      const finalBidAmount = bid_amount ?? amount;
+
+      const result = await orderLifecycleService.submitBid(
+        req.params.id,
+        req.user.id,
+        finalBidAmount
+      );
+
+      return res.status(201).json(result);
+    } catch (err) {
+      if (err instanceof DomainError) {
+        return res.status(err.status).json(err.payload);
+      }
+
+      logger.error('Failed to submit bid:', err?.message);
+      return res.status(500).json({ error: 'Internal Server Error.' });
+    }
+  }
+);
 
 export default router;
