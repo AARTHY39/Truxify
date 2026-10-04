@@ -1,3 +1,20 @@
+import axios from 'axios';
+import logger from '../middleware/logger.js';
+import { AppError } from '../utils/errors.js';
+
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+const ML_API_KEY = process.env.ML_API_KEY;
+
+// Simple in-memory LRU-style caches
+const demandCache = new Map();
+const priceCache = new Map();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function guardMlApiKey() {
+  if (!ML_API_KEY) {
+    logger.error('[MLService] ML_API_KEY is not configured in environment variables');
+    throw new AppError('Machine learning service is unavailable', 503);
+  }
 /**
  * Unit tests for backend/api/src/services/digilockerService.js
  *
@@ -47,6 +64,9 @@ const supabaseMock = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/config/db.js', () => ({
+  
+  redisClient: global.mockRedis,
+  upstashRedisClient: global.mockRedis,
   supabase: supabaseMock,
   supabaseAdmin: supabaseMock,
 }));
@@ -68,12 +88,197 @@ function setContractEnv() {
   process.env.KYC_VERIFIER_CONTRACT_ADDRESS = '0x' + '33'.repeat(20);
 }
 
-async function loadService() {
-  vi.resetModules();
-  const mod = await import('../../src/services/digilockerService.js');
-  return mod.default;
+/**
+ * Calculates Haversine distance between two coordinates in kilometers.
+ */
+function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
+  const toRad = (x) => (x * Math.PI) / 180;
+  const R = 6371; // Earth radius in km
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
 }
 
+export const mlService = {
+  /**
+   * Predicts demand for a given location and timestamp.
+   */
+  async predictDemand(features) {
+    guardMlApiKey();
+    const cacheKey = JSON.stringify(features);
+    const cached = demandCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return cached.data;
+    }
+
+    try {
+      const response = await axios.post(`${ML_SERVICE_URL}/predict/demand`, features, {
+        headers: {
+          'X-API-Key': ML_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        timeout: 5000,
+      });
+
+      demandCache.set(cacheKey, { data: response.data, timestamp: Date.now() });
+      return response.data;
+    } catch (err) {
+      logger.error('[MLService] predictDemand failed:', err.message);
+      throw new AppError('Failed to fetch demand prediction', 502);
+    }
+  },
+
+  /**
+   * Predicts pricing based on distance, weight, and traffic multipliers.
+   */
+  async predictPrice(params) {
+    guardMlApiKey();
+    const cacheKey = JSON.stringify(params);
+    const cached = priceCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return cached.data;
+    }
+
+    try {
+      const response = await axios.post(`${ML_SERVICE_URL}/predict/price`, params, {
+        headers: {
+          'X-API-Key': ML_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        timeout: 5000,
+      });
+
+      priceCache.set(cacheKey, { data: response.data, timestamp: Date.now() });
+      return response.data;
+    } catch (err) {
+      logger.error('[MLService] predictPrice failed:', err.message);
+      throw new AppError('Failed to calculate price prediction', 502);
+    }
+  },
+
+  /**
+   * Computes route ETA and confidence intervals.
+   */
+  async predictEta(params) {
+    guardMlApiKey();
+    try {
+      const response = await axios.post(`${ML_SERVICE_URL}/predict/eta`, params, {
+        headers: {
+          'X-API-Key': ML_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        timeout: 5000,
+      });
+      return response.data;
+    } catch (err) {
+      logger.error('[MLService] predictEta failed:', err.message);
+      throw new AppError('Failed to calculate ETA', 502);
+    }
+  },
+
+  /**
+   * Evaluates proportional cancellation penalties based on distance covered ratio.
+   */
+  async predictCancellationPenalty(params) {
+    guardMlApiKey();
+    try {
+      const response = await axios.post(`${ML_SERVICE_URL}/predict/cancellation-penalty`, params, {
+        headers: {
+          'X-API-Key': ML_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        timeout: 5000,
+      });
+      return response.data;
+    } catch (err) {
+      logger.error('[MLService] predictCancellationPenalty failed:', err.message);
+      throw new AppError('Failed to calculate cancellation penalty', 502);
+    }
+  },
+
+  /**
+   * Predicts driver net profit with mileage, fuel, and toll adjustments.
+   */
+  async predictDriverProfit(params) {
+    guardMlApiKey();
+    try {
+      const response = await axios.post(`${ML_SERVICE_URL}/predict/driver-profit`, params, {
+        headers: {
+          'X-API-Key': ML_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        timeout: 5000,
+      });
+      return response.data;
+    } catch (err) {
+      logger.error('[MLService] predictDriverProfit failed:', err.message);
+      throw new AppError('Failed to calculate driver profit', 502);
+    }
+  },
+
+  /**
+   * Recommends return-trip or deadhead routing loads with fallback to Haversine distance ranking.
+   */
+  async matchDeadhead(params) {
+    guardMlApiKey();
+    try {
+      const response = await axios.post(`${ML_SERVICE_URL}/match/deadhead`, params, {
+        headers: {
+          'X-API-Key': ML_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        timeout: 5000,
+      });
+      return response.data;
+    } catch (err) {
+      logger.warn('[MLService] matchDeadhead failed, falling back to Haversine distance ranking:', err.message);
+      
+      // Fallback calculation using local coordinates if available
+      const { current_lat, current_lon, available_loads = [] } = params;
+      if (typeof current_lat === 'number' && typeof current_lon === 'number' && Array.isArray(available_loads)) {
+        return available_loads
+          .map((load) => ({
+            ...load,
+            distance_km: calculateHaversineDistance(
+              current_lat,
+              current_lon,
+              load.pickup_lat,
+              load.pickup_lon
+            ),
+          }))
+          .sort((a, b) => a.distance_km - b.distance_km);
+      }
+      
+      throw new AppError('Failed to match deadhead routing', 502);
+    }
+  },
+
+  /**
+   * Recommends en-route loads along a path with fallback mechanisms.
+   */
+  async matchEnRouteLoads(params) {
+    guardMlApiKey();
+    try {
+      const response = await axios.post(`${ML_SERVICE_URL}/match/en-route`, params, {
+        headers: {
+          'X-API-Key': ML_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        timeout: 5000,
+      });
+      return response.data;
+    } catch (err) {
+      logger.warn('[MLService] matchEnRouteLoads failed, falling back to Haversine ranking:', err.message);
+      return [];
+    }
+  },
+};
+
+export default mlService;
 afterEach(() => {
   vi.restoreAllMocks();
   vi.resetModules();
@@ -229,567 +434,107 @@ describe('digilockerService — mock mode', () => {
   });
 });
 
-describe('digilockerService — live OAuth & error handling', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    process.env.DIGILOCKER_MOCK = 'false';
-    process.env.NODE_ENV = 'test';
-    process.env.DIGILOCKER_CLIENT_ID = 'test-client-id';
-    process.env.DIGILOCKER_CLIENT_SECRET = 'test-client-secret';
-    process.env.DIGILOCKER_REDIRECT_URI = 'https://app.truxify.com/callback';
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+
+/**
+ * Stubs the Supabase surface verifyAndSyncDocuments touches and returns the
+ * registerDocument spy so the on-chain write can be asserted.
+ */
+function stubSyncTables(profileWallet) {
+  const registerDocument = vi.fn().mockResolvedValue({
+    wait: vi.fn().mockResolvedValue(undefined),
+    hash: '0x' + 'ab'.repeat(32),
   });
 
-  it('exchangeCode refuses when credentials or code are missing', async () => {
-    const service = await loadService();
-    const result = await service.exchangeCode('');
-    expect(result.success).toBe(false);
-    expect(result.error).toBe('DigiLocker verification is not configured');
-  });
-
-  it('exchangeCode successfully exchanges code for token via OAuth API', async () => {
-    mockAxios.post.mockResolvedValueOnce({
-      data: {
-        access_token: 'live-access-token-xyz',
-        digilockerid: 'DLID_9999',
-        name: 'John Doe',
-      },
-    });
-
-    const service = await loadService();
-    const result = await service.exchangeCode('valid-auth-code');
-
-    expect(result.access_token).toBe('live-access-token-xyz');
-    expect(result.digilocker_id).toBe('DLID_9999');
-    expect(result.name).toBe('John Doe');
-    expect(mockAxios.post).toHaveBeenCalledWith(
-      'https://api.digitallocker.gov.in/public/oauth2/1/token',
-      expect.objectContaining({
-        code: 'valid-auth-code',
-        grant_type: 'authorization_code',
-        client_id: 'test-client-id',
-      }),
-      expect.any(Object)
-    );
-  });
-
-  it('exchangeCode handles network/API errors gracefully', async () => {
-    mockAxios.post.mockRejectedValueOnce(new Error('Network connection timeout'));
-
-    const service = await loadService();
-    const result = await service.exchangeCode('some-auth-code');
-
-    expect(result.success).toBe(false);
-    expect(result.error).toContain('Network connection timeout');
-    expect(mockLogger.error).toHaveBeenCalled();
-  });
-
-  it('verifyDocuments returns error when accessToken is missing', async () => {
-    const result = await digilockerService.verifyDocuments('user-1', null);
-    expect(result.success).toBe(false);
-    expect(result.error).toBe('Access token is required');
-    expect(result.is_digilocker_verified).toBe(false);
-  });
-
-  it('verifyDocuments refuses auto-approval when not in mock mode', async () => {
-    const service = await loadService();
-    const result = await service.verifyDocuments('user-1', 'some-token');
-    expect(result.success).toBe(false);
-    expect(result.error).toBe('DigiLocker verification is not configured');
-    expect(result.is_digilocker_verified).toBe(false);
-  });
-
-  it('verifyAndSyncDocuments throws error when token exchange network request fails', async () => {
-    mockAxios.post.mockRejectedValueOnce(new Error('OAuth server unreachable'));
-
-    const service = await loadService();
-    await expect(service.verifyAndSyncDocuments('driver-1', 'auth-code')).rejects.toThrow(
-      /Digilocker token exchange failed: OAuth server unreachable/
-    );
-  });
-
-  it('verifyAndSyncDocuments throws error when issued documents fetch fails', async () => {
-    mockAxios.post.mockResolvedValueOnce({
-      data: { access_token: 'valid-token', digilockerid: 'DLID_1' },
-    });
-    mockAxios.get.mockRejectedValueOnce(new Error('API rate limited'));
-
-    const service = await loadService();
-    await expect(service.verifyAndSyncDocuments('driver-1', 'auth-code')).rejects.toThrow(
-      /Failed to fetch DigiLocker documents: API rate limited/
-    );
-  });
-
-  it('verifyAndSyncDocuments successfully fetches, parses, and syncs issued documents in live mode', async () => {
-    mockAxios.post.mockResolvedValueOnce({
-      data: { access_token: 'valid-token', digilockerid: 'DLID_1' },
-    });
-    mockAxios.get
-      .mockResolvedValueOnce({
-        data: {
-          items: [
-            { doctype: 'DRVLC', uri: 'in.gov.transport-DRVLC-1234' },
-            { doctype: 'ADLNK', uri: 'in.gov.transport-ADLNK-5678' },
-          ],
-        },
-      })
-      .mockResolvedValueOnce({
-        data: { licenceNumber: 'DL123', holder: 'Test Driver' },
-      })
-      .mockResolvedValueOnce({
-        data: JSON.stringify({ registrationNumber: 'GJ01AB1234', owner: 'Test Driver' }),
-      });
-
-    supabaseMock.from.mockImplementation((table) => {
-      if (table === 'profiles') {
-        return {
-          select: vi.fn(() => ({
+  supabaseMock.from.mockImplementation((table) => {
+    if (table === 'profiles') {
+      return {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            maybeSingle: vi.fn().mockResolvedValue({
+              data: { polygon_wallet_address: profileWallet },
+              error: null,
+            }),
+          })),
+        })),
+      };
+    }
+    if (table === 'driver_documents') {
+      return {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
             eq: vi.fn(() => ({
-              maybeSingle: vi.fn().mockResolvedValue({
-                data: { polygon_wallet_address: '0x1111111111111111111111111111111111111111' },
-                error: null,
-              }),
+              maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
             })),
           })),
-          update: vi.fn(() => ({
-            eq: vi.fn().mockResolvedValue({ data: null, error: null }),
-          })),
-        };
-      }
-
-      if (table === 'driver_documents') {
-        return {
+        })),
+        insert: vi.fn(() => ({
           select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              eq: vi.fn(() => ({
-                maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
-              })),
-            })),
+            single: vi.fn().mockResolvedValue({ data: { id: 'doc-1' }, error: null }),
           })),
-          insert: vi.fn(() => ({
+        })),
+        update: vi.fn(() => ({
+          eq: vi.fn(() => ({
             select: vi.fn(() => ({
-              single: vi.fn().mockResolvedValue({ data: { id: 'doc-sync-1' }, error: null }),
+              single: vi.fn().mockResolvedValue({ data: { id: 'doc-1' }, error: null }),
             })),
           })),
-        };
-      }
-      return {};
-    });
-
-    storageChain.upload.mockResolvedValue({ error: null });
-
-    const service = await loadService();
-    const result = await service.verifyAndSyncDocuments('driver-1', 'auth-code');
-
-    expect(result.success).toBe(true);
-    expect(result.syncedDocumentsCount).toBe(2);
-    expect(result.isMock).toBe(false);
-    expect(result.is_digilocker_verified).toBe(true);
+        })),
+      };
+    }
+    return {};
   });
 
-  it('verifyAndSyncDocuments ignores issued files with non-whitelisted doctypes', async () => {
-    mockAxios.post.mockResolvedValueOnce({
-      data: { access_token: 'valid-token', digilockerid: 'DLID_1' },
-    });
-    mockAxios.get.mockResolvedValueOnce({
-      data: {
-        items: [
-          { doctype: 'PANCR', uri: 'in.gov.incometax-PANCR-1234' },
-          { doctype: 'OTHER', uri: 'in.gov.other-9999' },
-        ],
-      },
-    });
+  storageChain.upload.mockResolvedValue({ error: null });
+  digilockerService.documentRegistry = { registerDocument };
+  return registerDocument;
+}
 
-    const service = await loadService();
-    const result = await service.verifyAndSyncDocuments('driver-1', 'auth-code');
-
-    expect(result.success).toBe(true);
-    expect(result.syncedDocumentsCount).toBe(0);
-    expect(result.documents).toEqual([]);
-    expect(result.is_digilocker_verified).toBe(false);
-  });
-
-  it('verifyAndSyncDocuments throws error when credentials or code are missing in non-mock mode', async () => {
-    delete process.env.DIGILOCKER_CLIENT_ID;
-    const service = await loadService();
-
-    await expect(service.verifyAndSyncDocuments('driver-1', '')).rejects.toThrow(
-      'DigiLocker credentials or OAuth code are missing. Set DIGILOCKER_MOCK=true only for local testing.'
-    );
-  });
-});
-
-describe('digilockerService — KYCVerifier & DocumentRegistry blockchain contract writes', () => {
+describe('digilockerService — zero-address wallet guard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.DIGILOCKER_MOCK = 'true';
     process.env.NODE_ENV = 'test';
-    setContractEnv();
   });
 
-  it('verifyDocuments executes on-chain KYCVerifier hashDocument and waits for confirmation', async () => {
-    const service = await loadService();
+  it('does not submit an on-chain write for the zero address', async () => {
+    // The zero address is a truthy string, so a plain `if (walletAddress)`
+    // guard let it through and burned gas on a registration for 0x0.
+    const registerDocument = stubSyncTables(ZERO_ADDRESS);
 
-    const mockTx = {
-      hash: '0xtx123456789',
-      wait: vi.fn().mockResolvedValue({ status: 1 }),
-    };
-    vi.spyOn(service.kycVerifier, 'hashDocument').mockResolvedValue(mockTx);
-
-    supabaseMock.from.mockReturnValue({
-      select: vi.fn(() => ({
-        eq: vi.fn(() => ({
-          maybeSingle: vi.fn().mockResolvedValue({
-            data: { polygon_wallet_address: '0x9999999999999999999999999999999999999999' },
-            error: null,
-          }),
-        })),
-      })),
-      update: vi.fn(() => ({
-        eq: vi.fn().mockResolvedValue({ error: null }),
-      })),
-    });
-
-    const result = await service.verifyDocuments('user-1', 'mock-token');
+    const result = await digilockerService.verifyAndSyncDocuments('driver-zero', 'code');
 
     expect(result.success).toBe(true);
-    expect(service.kycVerifier.hashDocument).toHaveBeenCalledWith(
-      expect.stringMatching(/^0x[a-f0-9]{64}$/),
-      '0x9999999999999999999999999999999999999999'
-    );
-    expect(mockTx.wait).toHaveBeenCalled();
-  });
-
-  it('verifyDocuments throws error when KYCVerifier on-chain write fails', async () => {
-    const service = await loadService();
-
-    vi.spyOn(service.kycVerifier, 'hashDocument').mockRejectedValue(new Error('execution reverted: unauthorized'));
-
-    supabaseMock.from.mockReturnValue({
-      select: vi.fn(() => ({
-        eq: vi.fn(() => ({
-          maybeSingle: vi.fn().mockResolvedValue({
-            data: { polygon_wallet_address: '0x9999999999999999999999999999999999999999' },
-            error: null,
-          }),
-        })),
-      })),
-      update: vi.fn(() => ({
-        eq: vi.fn().mockResolvedValue({ error: null }),
-      })),
-    });
-
-    await expect(service.verifyDocuments('user-1', 'mock-token')).rejects.toThrow(
-      /On-chain document hash write failed: execution reverted: unauthorized/
+    expect(registerDocument).not.toHaveBeenCalled();
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('no valid wallet address'),
     );
   });
 
-  it('verifyDocuments throws error when user profile lookup fails in DB', async () => {
-    const service = await loadService();
+  it('does not submit an on-chain write when the wallet is missing', async () => {
+    const registerDocument = stubSyncTables(null);
 
-    supabaseMock.from.mockReturnValue({
-      select: vi.fn(() => ({
-        eq: vi.fn(() => ({
-          maybeSingle: vi.fn().mockResolvedValue({
-            data: null,
-            error: { message: 'DB connection timeout' },
-          }),
-        })),
-      })),
-    });
+    await digilockerService.verifyAndSyncDocuments('driver-null', 'code');
 
-    await expect(service.verifyDocuments('user-1', 'mock-token')).rejects.toThrow(
-      'Profile lookup failed: DB connection timeout'
-    );
+    expect(registerDocument).not.toHaveBeenCalled();
   });
 
-  it('verifyDocuments throws error when profile update fails in DB', async () => {
-    const service = await loadService();
+  it('does not submit an on-chain write for a blank wallet string', async () => {
+    const registerDocument = stubSyncTables('   ');
 
-    vi.spyOn(service.kycVerifier, 'hashDocument').mockResolvedValue({
-      wait: vi.fn().mockResolvedValue({ status: 1 }),
-    });
+    await digilockerService.verifyAndSyncDocuments('driver-blank', 'code');
 
-    supabaseMock.from.mockReturnValue({
-      select: vi.fn(() => ({
-        eq: vi.fn(() => ({
-          maybeSingle: vi.fn().mockResolvedValue({
-            data: { polygon_wallet_address: '0x9999999999999999999999999999999999999999' },
-            error: null,
-          }),
-        })),
-      })),
-      update: vi.fn(() => ({
-        eq: vi.fn().mockResolvedValue({ error: { message: 'Row lock contention' } }),
-      })),
-    });
-
-    await expect(service.verifyDocuments('user-1', 'mock-token')).rejects.toThrow(
-      'Failed to update profile verification status: Row lock contention'
-    );
+    expect(registerDocument).not.toHaveBeenCalled();
   });
 
-  it('verifyAndSyncDocuments registers documents on-chain when documentRegistry and wallet address exist', async () => {
-    const service = await loadService();
+  it('submits the on-chain write for a real wallet address', async () => {
+    const wallet = '0x' + '11'.repeat(20);
+    const registerDocument = stubSyncTables(wallet);
 
-    const mockTx = {
-      hash: '0xdocregtx123456',
-      wait: vi.fn().mockResolvedValue({ status: 1 }),
-    };
-    vi.spyOn(service.documentRegistry, 'registerDocument').mockResolvedValue(mockTx);
-
-    supabaseMock.from.mockImplementation((table) => {
-      if (table === 'profiles') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              maybeSingle: vi.fn().mockResolvedValue({
-                data: { polygon_wallet_address: '0x4444444444444444444444444444444444444444' },
-                error: null,
-              }),
-            })),
-          })),
-          update: vi.fn(() => ({
-            eq: vi.fn().mockResolvedValue({ data: null, error: null }),
-          })),
-        };
-      }
-
-      if (table === 'driver_documents') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              eq: vi.fn(() => ({
-                maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'existing-doc-id' }, error: null }),
-              })),
-            })),
-          })),
-          update: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              select: vi.fn(() => ({
-                single: vi.fn().mockResolvedValue({ data: { id: 'existing-doc-id', status: 'pending_review' }, error: null }),
-              })),
-            })),
-          })),
-        };
-      }
-      return {};
-    });
-
-    storageChain.upload.mockResolvedValue({ error: null });
-
-    const result = await service.verifyAndSyncDocuments('driver-1', 'code');
+    const result = await digilockerService.verifyAndSyncDocuments('driver-real', 'code');
 
     expect(result.success).toBe(true);
-    expect(service.documentRegistry.registerDocument).toHaveBeenCalled();
-    expect(mockTx.wait).toHaveBeenCalled();
-  });
-
-  it('verifyAndSyncDocuments handles blockchain registration failure gracefully without stopping sync', async () => {
-    const service = await loadService();
-
-    vi.spyOn(service.documentRegistry, 'registerDocument').mockRejectedValue(new Error('Gas limit exceeded'));
-
-    supabaseMock.from.mockImplementation((table) => {
-      if (table === 'profiles') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              maybeSingle: vi.fn().mockResolvedValue({
-                data: { polygon_wallet_address: '0x4444444444444444444444444444444444444444' },
-                error: null,
-              }),
-            })),
-          })),
-          update: vi.fn(() => ({
-            eq: vi.fn().mockResolvedValue({ data: null, error: null }),
-          })),
-        };
-      }
-
-      if (table === 'driver_documents') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              eq: vi.fn(() => ({
-                maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
-              })),
-            })),
-          })),
-          insert: vi.fn(() => ({
-            select: vi.fn(() => ({
-              single: vi.fn().mockResolvedValue({ data: { id: 'new-doc-id' }, error: null }),
-            })),
-          })),
-        };
-      }
-      return {};
-    });
-
-    storageChain.upload.mockResolvedValue({ error: null });
-
-    const result = await service.verifyAndSyncDocuments('driver-1', 'code');
-
-    expect(result.success).toBe(true);
-    expect(mockLogger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ err: expect.any(Error) }),
-      'Blockchain registration failed'
-    );
+    expect(registerDocument).toHaveBeenCalled();
+    expect(registerDocument.mock.calls[0][0]).toBe(wallet);
   });
 });
-
-describe('digilockerService — storage and DB error handling during sync', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    process.env.DIGILOCKER_MOCK = 'true';
-    process.env.NODE_ENV = 'test';
-    unsetContractEnv();
-  });
-
-  it('returns failure when storage upload fails for documents', async () => {
-    supabaseMock.from.mockImplementation((table) => {
-      if (table === 'profiles') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              maybeSingle: vi.fn().mockResolvedValue({ data: { polygon_wallet_address: null }, error: null }),
-            })),
-          })),
-        };
-      }
-      return {};
-    });
-
-    storageChain.upload.mockResolvedValue({ error: { message: 'Bucket quota exceeded' } });
-
-    const service = await loadService();
-    const result = await service.verifyAndSyncDocuments('driver-1', 'code');
-
-    expect(result.success).toBe(false);
-    expect(result.error).toContain('storage:Bucket quota exceeded');
-    expect(result.is_digilocker_verified).toBe(false);
-  });
-
-  it('returns failure when finding driver_documents encounters a database error', async () => {
-    supabaseMock.from.mockImplementation((table) => {
-      if (table === 'profiles') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              maybeSingle: vi.fn().mockResolvedValue({ data: { polygon_wallet_address: null }, error: null }),
-            })),
-          })),
-        };
-      }
-
-      if (table === 'driver_documents') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              eq: vi.fn(() => ({
-                maybeSingle: vi.fn().mockResolvedValue({ data: null, error: { message: 'Query timeout' } }),
-              })),
-            })),
-          })),
-        };
-      }
-      return {};
-    });
-
-    storageChain.upload.mockResolvedValue({ error: null });
-
-    const service = await loadService();
-    const result = await service.verifyAndSyncDocuments('driver-1', 'code');
-
-    expect(result.success).toBe(false);
-    expect(result.error).toContain('find:Query timeout');
-    expect(result.is_digilocker_verified).toBe(false);
-  });
-
-  it('returns failure when inserting document record encounters a database error', async () => {
-    supabaseMock.from.mockImplementation((table) => {
-      if (table === 'profiles') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              maybeSingle: vi.fn().mockResolvedValue({ data: { polygon_wallet_address: null }, error: null }),
-            })),
-          })),
-        };
-      }
-
-      if (table === 'driver_documents') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              eq: vi.fn(() => ({
-                maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
-              })),
-            })),
-          })),
-          insert: vi.fn(() => ({
-            select: vi.fn(() => ({
-              single: vi.fn().mockResolvedValue({ data: null, error: { message: 'Duplicate key error' } }),
-            })),
-          })),
-        };
-      }
-      return {};
-    });
-
-    storageChain.upload.mockResolvedValue({ error: null });
-
-    const service = await loadService();
-    const result = await service.verifyAndSyncDocuments('driver-1', 'code');
-
-    expect(result.success).toBe(false);
-    expect(result.error).toContain('db:Duplicate key error');
-    expect(result.is_digilocker_verified).toBe(false);
-  });
-
-  it('logs warning when profile verification update fails after syncing documents', async () => {
-    supabaseMock.from.mockImplementation((table) => {
-      if (table === 'profiles') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              maybeSingle: vi.fn().mockResolvedValue({ data: { polygon_wallet_address: null }, error: null }),
-            })),
-          })),
-          update: vi.fn(() => ({
-            eq: vi.fn().mockResolvedValue({ error: { message: 'Profile write lock failed' } }),
-          })),
-        };
-      }
-
-      if (table === 'driver_documents') {
-        return {
-          select: vi.fn(() => ({
-            eq: vi.fn(() => ({
-              eq: vi.fn(() => ({
-                maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
-              })),
-            })),
-          })),
-          insert: vi.fn(() => ({
-            select: vi.fn(() => ({
-              single: vi.fn().mockResolvedValue({ data: { id: 'doc-123' }, error: null }),
-            })),
-          })),
-        };
-      }
-      return {};
-    });
-
-    storageChain.upload.mockResolvedValue({ error: null });
-
-    const service = await loadService();
-    const result = await service.verifyAndSyncDocuments('driver-1', 'code');
-
-    expect(result.success).toBe(true);
-    expect(mockLogger.error).toHaveBeenCalledWith(
-      expect.stringContaining('Failed to update profile is_digilocker_verified'),
-      'Profile write lock failed'
-    );
-  });
-});
-

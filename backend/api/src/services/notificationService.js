@@ -33,6 +33,7 @@ const ALLOWED_NOTIF_TYPES = new Set([
   'new_bid',
   'payment_locked',
   'payment_released',
+  'delivery_otp',
 ]);
 
 // Tokens that can never be delivered again — the device row is deactivated so
@@ -103,12 +104,12 @@ async function loadActiveDevices(userId) {
       .eq('user_id', userId)
       .eq('is_active', true);
     if (error) {
-      logger.error(`[FCM] Failed to load active devices for user ${userId}: ${error.message}`);
+      logger.error({ event: 'FCM_DEVICES_LOAD_ERROR', userId, error: error?.message ?? String(error) }, 'Failed to load active devices');
       return [];
     }
     return Array.isArray(data) ? data : [];
   } catch (err) {
-    logger.error(`[FCM] Failed to load active devices for user ${userId}: ${err.message}`);
+    logger.error({ event: 'FCM_DEVICES_LOAD_ERROR', userId, error: err?.message ?? String(err) }, 'Failed to load active devices');
     return [];
   }
 }
@@ -194,13 +195,13 @@ async function deactivateInvalidDevices(deviceIds, userId, invalidatedTokens) {
         })
         .in('id', deviceIds);
       if (error) {
-        logger.error(`[FCM] Failed to deactivate invalid devices for user ${userId}: ${error.message}`);
+        logger.error({ event: 'FCM_DEVICES_DEACTIVATE_ERROR', userId, error: error?.message ?? String(error) }, 'Failed to deactivate invalid devices');
       } else {
         deactivated = deviceIds.length;
-        logger.info(`[FCM] Deactivated ${deactivated} invalid device(s) for user ${userId}.`);
+        logger.info({ event: 'FCM_DEVICES_DEACTIVATED', userId, deactivated }, 'Deactivated invalid devices');
       }
     } catch (dbErr) {
-      logger.error(`[FCM] Failed to deactivate invalid devices for user ${userId}: ${dbErr.message}`);
+      logger.error({ event: 'FCM_DEVICES_DEACTIVATE_ERROR', userId, error: dbErr?.message ?? String(dbErr) }, 'Failed to deactivate invalid devices');
     }
   }
 
@@ -215,7 +216,7 @@ async function deactivateInvalidDevices(deviceIds, userId, invalidatedTokens) {
         .eq('id', userId)
         .in('fcm_token', invalidatedTokens);
     } catch (dbErr) {
-      logger.error(`[FCM] Failed to clear invalid profile FCM token for user ${userId}: ${dbErr.message}`);
+      logger.error({ event: 'FCM_PROFILE_TOKEN_CLEAR_ERROR', userId, error: dbErr?.message ?? String(dbErr) }, 'Failed to clear invalid profile FCM token');
     }
   }
 
@@ -234,7 +235,7 @@ async function touchDevicesLastSeen(deviceIds) {
       .update({ last_seen: new Date().toISOString() })
       .in('id', deviceIds);
   } catch (dbErr) {
-    logger.warn(`[FCM] Failed to update device last_seen: ${dbErr.message}`);
+    logger.warn({ event: 'FCM_DEVICES_LAST_SEEN_ERROR', error: dbErr?.message ?? String(dbErr) }, 'Failed to update device last seen');
   }
 }
 
@@ -457,6 +458,7 @@ export async function storeDeliveryOtp(orderId, otp, ttlMinutes = 15) {
 
     if (invalidateError) {
       logger.error({ err: invalidateError }, '[NotificationService] Failed to invalidate existing OTPs');
+      return null;
     }
 
     const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString();
@@ -523,6 +525,7 @@ export async function verifyDeliveryOtp(otpId) {
       })
       .eq('id', otpId)
       .eq('verified', false)
+      .gt('expires_at', new Date().toISOString())
       .select('id')
       .maybeSingle();
 
@@ -547,7 +550,7 @@ export async function expireDeliveryOtps(orderId) {
   return measureExecution('NotificationService.expireDeliveryOtps', async () => {
     if (!supabaseAdmin) {
       logger.error({}, '[NotificationService] Service-role client not configured — cannot expire OTPs.');
-      return;
+      return false;
     }
     const { error } = await supabaseAdmin
       .from('delivery_otps')
@@ -557,7 +560,9 @@ export async function expireDeliveryOtps(orderId) {
 
     if (error) {
       logger.error({ err: error }, '[NotificationService] Failed to expire OTPs');
+      return false;
     }
+    return true;
   });
 }
 
@@ -587,6 +592,12 @@ export async function insertNotification(notificationData) {
 }
 
 export async function sendPushNotification(userId, title, body, notifType, metadata = {}) {
+/**
+ * Existing push entry point used by order lifecycle, payments, escrow and
+ * document flows. Persists to the notifications table, then fans the push out
+ * to every active device via sendFcmNotification.
+ */
+export async function sendPushNotification(userId, title, body, notifType, metadata = {}, data = {}) {
   return measureExecution('NotificationService.sendPushNotification', async () => {
     if (notifType && !ALLOWED_NOTIF_TYPES.has(notifType)) {
       throw new DomainError(400, { error: `Invalid notif_type: ${notifType}` });
@@ -632,6 +643,7 @@ export async function sendDeliveryOtpNotification(customerId, orderDisplayId, ot
   const title = 'Delivery Verification OTP';
   const plaintextOtp = String(otp);
   const body = `Your delivery OTP for order ${orderDisplayId} is ${plaintextOtp}. Share this with the driver only after verifying your cargo has arrived safely.`;
+  const body = `Your delivery OTP for order ${orderDisplayId} is ${otp}. Share this with the driver only after verifying your cargo has arrived safely.`;
 
   let dbSuccess = false;
   try {
@@ -648,6 +660,10 @@ export async function sendDeliveryOtpNotification(customerId, orderDisplayId, ot
           order_display_id: orderDisplayId,
           otp: plaintextOtp 
         }
+        notif_type: 'delivery_otp',
+        // No OTP or OTP-derived value is persisted in metadata: an unsalted digest of
+        // a 6-digit code is offline-brute-forceable if the table leaks.
+        metadata: { order_display_id: orderDisplayId }
       });
 
       if (error) {
@@ -672,6 +688,7 @@ export async function sendDeliveryOtpNotification(customerId, orderDisplayId, ot
         deliveryOtp: plaintextOtp,
         otp: plaintextOtp 
       }
+      { orderDisplayId, notifType: 'delivery_otp', otp: String(otp) }
     );
   } catch (err) {
     logger.error({ err: err?.message ?? String(err) }, 'Unexpected sendFcmNotification error');
