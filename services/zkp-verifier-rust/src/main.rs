@@ -246,6 +246,8 @@ async fn process_connection(mut stream: TcpStream) {
             break pos + 4;
         }
         if buf.len() > 64 * 1024 {
+            let _ = stream.write_all(&http_response("431 Request Header Fields Too Large", r#"{"error":"Headers too large"}"#)).await;
+            let _ = stream.flush().await;
             return;
         }
     };
@@ -256,6 +258,8 @@ async fn process_connection(mut stream: TcpStream) {
     // Reject unreasonably large or overflowing body lengths from an untrusted
     // Content-Length header before performing any pointer arithmetic.
     if content_length > MAX_BODY {
+        let _ = stream.write_all(&http_response("413 Payload Too Large", r#"{"error":"Payload too large"}"#)).await;
+        let _ = stream.flush().await;
         return;
     }
     let body_end = match header_end.checked_add(content_length) {
@@ -266,7 +270,11 @@ async fn process_connection(mut stream: TcpStream) {
     // Read the remaining body bytes.
     while buf.len() < body_end {
         let n = match stream.read(&mut chunk).await {
-            Ok(0) => return,
+            Ok(0) => {
+                let _ = stream.write_all(&http_response("400 Bad Request", r#"{"error":"Truncated request body"}"#)).await;
+                let _ = stream.flush().await;
+                return;
+            }
             Ok(n) => n,
             Err(_) => return,
         };
