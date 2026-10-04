@@ -151,6 +151,11 @@ async def test_health_remains_responsive_and_native_capacity_is_shared(app):
         assert release.wait(3)
         return original(*args)
     app.state.builder.build_road_network = blocked
+    previous = {
+        'max_concurrent': execution.ML_MAX_CONCURRENT_INFERENCE,
+        'max_workers': execution.ML_INFERENCE_MAX_WORKERS,
+        'queue_timeout': execution.ML_INFERENCE_QUEUE_TIMEOUT_SECONDS,
+    }
     execution.configure(max_concurrent=1, max_workers=1, queue_timeout=0.03)
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
@@ -167,7 +172,7 @@ async def test_health_remains_responsive_and_native_capacity_is_shared(app):
             assert response.status_code == 200
     finally:
         release.set()
-        execution.configure(max_concurrent=4, max_workers=4, queue_timeout=5)
+        execution.configure(**previous)
 
 
 @pytest.mark.asyncio
