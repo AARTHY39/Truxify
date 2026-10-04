@@ -81,7 +81,7 @@
 
 import express from 'express';
 import crypto from 'crypto';
-import { supabase, supabaseAdmin, mongoDb, redisClient, createUserClient } from '../config/db.js';
+import { supabase, supabaseAdmin, createUserClient, mongoDb, redisClient } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePolicy } from '../middleware/requirePolicy.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
@@ -197,8 +197,9 @@ router.post('/', authenticate, requirePolicy('truck:register'), userLimiter, val
   const normalizedNumberPlate = sanitizeNumberPlate(number_plate);
 
   try {
+    const userDb = createUserClient(req.token);
     // Check for duplicate number plate
-    const { data: existing, error: checkErr } = await supabase
+    const { data: existing, error: checkErr } = await userDb
       .from('trucks')
       .select('id')
       .eq('number_plate', normalizedNumberPlate)
@@ -212,7 +213,7 @@ router.post('/', authenticate, requirePolicy('truck:register'), userLimiter, val
       return res.status(409).json({ error: 'A truck with this number plate is already registered.' });
     }
 
-    const { data: truck, error: insertErr } = await supabase
+    const { data: truck, error: insertErr } = await userDb
       .from('trucks')
       .insert({ name: sanitizeTruckName(name), truck_type, number_plate: normalizedNumberPlate, max_capacity_tons, driver_id: req.user.id })
       .select('id, name, truck_type, number_plate, max_capacity_tons, created_at')
@@ -345,7 +346,7 @@ async function canViewTruckNumber(user, truck, client) {
     return { allowed: true };
   }
 
-  const db = client || supabase;
+  const db = client || supabaseAdmin;
   const { data: order, error } = await db
     .from('orders')
     .select('id')
@@ -428,7 +429,8 @@ router.get(
       return acc;
     }, {});
     const hash = crypto.createHash('md5').update(JSON.stringify(sorted)).digest('hex');
-    return `v${version}:${hash}`;
+    // Search results may include a number plate after a per-user access check.
+    return `v${version}:${req.user.id}:${hash}`;
   }),
   async (req, res) => {
   const {
@@ -517,6 +519,7 @@ router.get(
 
   const userClient = createUserClient(req.token);
   const searchCacheFilters = {
+    userId: req.user.id,
     pickupLat: numPickupLat,
     pickupLng: numPickupLng,
     dropLat: numDropLat,
@@ -600,8 +603,7 @@ router.get(
         const maxDistanceMeters = 50000; // 50km radius
         const nearbyTelemetry = await mongoDb.collection('telemetry').find({
           location: {
-            $near: {
-              $geometry: {
+            $near: {$geometry: {
                 type: "Point",
                 coordinates: [numPickupLng, numPickupLat]
               },
@@ -620,9 +622,6 @@ router.get(
       return res.json([]);
     }
 
-    // driver_details / trucks / profiles are RLS-protected with all anon
-    // privileges revoked, so the marketplace search must use the service-role
-    // client (scope is enforced by the search criteria, never the raw anon key).
     const { data: drivers, error: driversErr } = await supabaseAdmin
       .from('driver_details')
       .select('user_id, rating, total_trips, completion_rate, truck_id')
@@ -771,7 +770,9 @@ router.get(
 router.get('/:id/number', authenticate, userLimiter, validateParams(uuidParamSchema), async (req, res) => {
   try {
     const userClient = createUserClient(req.token);
-    const { data: truck, error } = await userClient
+    // Authorized customers may view a truck assigned to their order, even
+    // though the truck owner RLS policy cannot expose it through their token.
+    const { data: truck, error } = await supabaseAdmin
       .from('trucks')
       .select('id, driver_id, number_plate')
       .eq('id', req.params.id)
@@ -793,8 +794,6 @@ router.get('/:id/number', authenticate, userLimiter, validateParams(uuidParamSch
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
-
-// export default moved to end
 
 // ============================================================================
 // INTELLIGENT FUEL ADVISOR
@@ -849,7 +848,7 @@ router.get('/:id/fuel-advisor', authenticate, userLimiter, validateParams(uuidPa
 
   // Ensure truck belongs to the caller (if driver) or caller is admin
   if (req.user.role === 'driver') {
-    const { data: truck, error: truckErr } = await supabase
+    const { data: truck, error: truckErr } = await createUserClient(req.token)
       .from('trucks')
       .select('id')
       .eq('id', truckId)
@@ -870,9 +869,7 @@ router.get('/:id/fuel-advisor', authenticate, userLimiter, validateParams(uuidPa
   }
 });
 
-// Resolves #2053: Prevent race conditions in truck allocation
-
 // ============================================================================
-// EXPORT ROUTER (MOVED TO END TO ENSURE ALL ENDPOINTS ARE REACHABLE - #14304)
+// EXPORT ROUTER (MOVED TO END TO ENSURE ALL ENDPOINTS ARE REACHABLE - #14303)
 // ============================================================================
 export default router;
