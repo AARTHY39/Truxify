@@ -515,6 +515,7 @@ router.get(
     return res.status(400).json({ error: 'min_capacity must be less than or equal to max_capacity' });
   }
 
+  const userClient = createUserClient(req.token);
   const searchCacheFilters = {
     pickupLat: numPickupLat,
     pickupLng: numPickupLng,
@@ -668,7 +669,7 @@ router.get(
       const truck = truckMap[d.truck_id] || {};
       let truckNumber = '';
       if (truck.id) {
-        const access = await canViewTruckNumber(req.user, truck);
+        const access = await canViewTruckNumber(req.user, truck, userClient);
         truckNumber = access.allowed ? (truck.number_plate || '') : '';
       }
       return {
