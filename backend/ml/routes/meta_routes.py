@@ -143,7 +143,7 @@ async def sample_task(k_shot: int = 5):
 
 @router.get("/task/few-shot")
 async def sample_few_shot_task(
-    k_shot: Annotated[int, Query(ge=1)] = 5,
+    k_shot: Annotated[int, Query(ge=1, le=1000)] = 5,
     num_classes: Annotated[int, Query(ge=2, le=2)] = 2,
 ):
     """Sample a few-shot classification task"""

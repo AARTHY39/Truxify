@@ -134,3 +134,33 @@ def test_wrong_feature_dimensions_fail_before_sampling():
     value.tasks[0]['weights'] = np.ones((3, 1))
     with pytest.raises(ValueError, match='feature dimensions'):
         value.generate_few_shot_task()
+
+
+@pytest.mark.asyncio
+async def test_http_shot_ceiling_before_sampler_allocation(monkeypatch):
+    from routes import meta_routes as r
+    value = generator()
+    calls = []
+    original = value.generate_few_shot_task
+    def counted(count, classes):
+        calls.append(count)
+        return original(count, classes)
+    monkeypatch.setattr(value, 'generate_few_shot_task', counted)
+    monkeypatch.setattr(r, 'task_generator', value)
+    app = FastAPI()
+    app.include_router(r.router)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        for count in (1001, 10**8):
+            assert (await client.get(f'/meta/task/few-shot?k_shot={count}')).status_code == 422
+        assert calls == []
+        response = await client.get('/meta/task/few-shot?k_shot=1000')
+        assert response.status_code == 200
+        assert calls == [1000]
+        body = response.json()['data']
+        for label, rows in body['support_set'].items():
+            rows = np.array(rows)
+            assert rows.shape == (1000, 2)
+            assert np.all((rows[:, 0] > 0) == int(label))
+    parameter = next(p for p in app.openapi()['paths']['/meta/task/few-shot']['get']['parameters']
+                     if p['name'] == 'k_shot')
+    assert parameter['schema']['maximum'] == 1000

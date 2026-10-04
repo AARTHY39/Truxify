@@ -15,7 +15,9 @@ For positive thresholds use exponential proposals with rate
 standard-normal proposals. Each class uses one batch of `4*k_shot+64` proposals.
 Insufficient accepted samples or unresolved finite boundaries fail explicitly;
 there is no unbounded rare-class search. This bounds proposals for a requested
-shot count; it is not a general API resource admission limit.
+shot count. The HTTP endpoint caps k_shot at1000 and rejects larger requests
+before calling the sampler; direct offline generator use remains available for
+statistical controls. This is not general API concurrency/resource admission.
 
 Native tests check actual latent truth, rare tails, conditional moments and
 orthogonal independence, extreme coefficient scales, finite proposal counts,
