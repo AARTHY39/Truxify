@@ -167,6 +167,7 @@ describe('securityHeaderDuplicates setHeader guard', () => {
     const next = vi.fn();
     securityHeaderDuplicates(req, res, next);
     res.setHeader('x-frame-options', 'SAMEORIGIN');
+    res.setHeader('x-frame-options', 'SAMEORIGIN');
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(res.originalSetHeader).toHaveBeenCalledTimes(2);
   });
