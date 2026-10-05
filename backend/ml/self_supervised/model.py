@@ -97,6 +97,10 @@ class MoCo(nn.Module):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.projection_dim = projection_dim
+        if isinstance(queue_size, bool) or not isinstance(queue_size, int) or queue_size <= 0:
+            raise ValueError("queue_size must be a positive integer")
+        if not isinstance(momentum, (int, float)) or not math.isfinite(momentum) or not 0 <= momentum <= 1:
+            raise ValueError("momentum must be finite and in [0, 1]")
         self.queue_size = queue_size
         self.momentum = momentum
         
@@ -119,7 +123,9 @@ class MoCo(nn.Module):
         )
         
         # Initialize key encoder with query encoder
-        self._momentum_update_key_encoder(1.0)
+        self._momentum_update_key_encoder(0.0)
+        for parameter in self.key_encoder.parameters():
+            parameter.requires_grad_(False)
         
         # Queue
         self.register_buffer('queue', torch.randn(projection_dim, queue_size))
@@ -131,31 +137,53 @@ class MoCo(nn.Module):
         
         logger.info(f"✅ MoCo initialized with queue size {queue_size}")
     
+    @torch.no_grad()
     def _momentum_update_key_encoder(self, momentum: float):
         """Momentum update of key encoder"""
         for param_q, param_k in zip(self.query_encoder.parameters(), self.key_encoder.parameters()):
-            param_k.data = param_k.data * momentum + param_q.data * (1.0 - momentum)
+            param_k.mul_(momentum).add_(param_q, alpha=1.0 - momentum)
     
     @torch.no_grad()
     def _dequeue_and_enqueue(self, keys: torch.Tensor):
-        """Update queue with new keys"""
-        batch_size = keys.size(0)
-        ptr = int(self.queue_ptr)
-        
-        # Replace keys at ptr
-        self.queue[:, ptr:ptr + batch_size] = keys.T
-        ptr = (ptr + batch_size) % self.queue_size
-        self.queue_ptr[0] = ptr
-    
+        """Admit all rows, retaining only the newest capacity-sized suffix."""
+        if (keys.ndim != 2 or keys.shape[1] != self.projection_dim or not len(keys)
+                or keys.dtype != self.queue.dtype or keys.device != self.queue.device
+                or not torch.isfinite(keys).all()):
+            raise ValueError("queue keys require nonempty finite matching [batch, projection] tensors")
+        ptr = int(self.queue_ptr.item())
+        if not 0 <= ptr < self.queue_size:
+            raise ValueError("queue pointer is outside capacity")
+        count = len(keys)
+        retained = min(count, self.queue_size)
+        start = (ptr + count - retained) % self.queue_size
+        indices = (torch.arange(retained, device=keys.device) + start) % self.queue_size
+        self.queue.index_copy_(1, indices, keys[-retained:].T)
+        self.queue_ptr[0] = (ptr + count) % self.queue_size
+
     def forward(self, x_q: torch.Tensor, x_k: torch.Tensor) -> torch.Tensor:
         """Forward pass with contrastive loss"""
-        # Query
+        if (x_q.ndim != 2 or x_q.shape != x_k.shape or not len(x_q)
+                or x_q.shape[1] != self.input_dim):
+            raise ValueError("MoCo views require identical nonempty [batch, input_dim] shapes")
+        parameter = next(self.query_encoder.parameters())
+        if (x_q.dtype != parameter.dtype or x_k.dtype != parameter.dtype
+                or x_q.device != parameter.device or x_k.device != parameter.device
+                or not torch.isfinite(x_q).all() or not torch.isfinite(x_k).all()):
+            raise ValueError("MoCo views require finite tensors matching encoder dtype/device")
+        if not 0 <= int(self.queue_ptr.item()) < self.queue_size:
+            raise ValueError("queue pointer is outside capacity")
+        if (not isinstance(self.temperature, (int, float)) or not math.isfinite(self.temperature)
+                or self.temperature <= 0):
+            raise ValueError("temperature must be finite and positive")
+        # Query gradients belong only to the query encoder.
         q = self.query_encoder(x_q)
         q = F.normalize(q, dim=1)
         
-        # Key
-        k = self.key_encoder(x_k)
-        k = F.normalize(k, dim=1)
+        # The momentum dictionary is updated before encoding this training key.
+        with torch.no_grad():
+            if self.training:
+                self._momentum_update_key_encoder(self.momentum)
+            k = F.normalize(self.key_encoder(x_k), dim=1)
         
         # Contrastive loss
         l_pos = torch.einsum('nc,nc->n', q, k).unsqueeze(-1) / self.temperature
@@ -166,11 +194,8 @@ class MoCo(nn.Module):
         
         loss = F.cross_entropy(logits, labels)
         
-        # Update queue
-        self._dequeue_and_enqueue(k)
-        
-        # Momentum update
-        self._momentum_update_key_encoder(self.momentum)
+        if self.training:
+            self._dequeue_and_enqueue(k)
         
         return loss
 
