@@ -177,7 +177,7 @@ async def get_model_info():
                 'input_dim': input_dim,
                 'hidden_dim': hidden_dim,
                 'output_dim': output_dim,
-                'parameters': sum(p.numel() for p in model.parameters()),
+                'parameters': sum(p.numel() for p in maml.model.parameters()),
                 'device': str(maml.device),
                 'total_tasks': len(task_generator.tasks)
             },
