@@ -131,12 +131,12 @@ class GradientSurgery:
             return grads
         
         # For each gradient, project to remove conflicts
-        projected = grads.copy()
+        projected = [value.clone() for value in grads]
         for i in range(len(grads)):
             for j in range(len(grads)):
                 if i != j:
                     # Compute dot product
-                    dot = torch.dot(grads[i].flatten(), grads[j].flatten())
+                    dot = torch.dot(projected[i].flatten(), grads[j].flatten())
                     if dot < 0:  # Conflicting gradients
                         # Project gradient
                         norm_sq = torch.norm(grads[j]) ** 2
@@ -258,27 +258,33 @@ class MultiTaskTrainer:
             # PCGrad operates on per-task gradients, not the summed gradient.
             # Backpropagate each task loss separately to collect one gradient
             # vector per task, then resolve conflicts across tasks.
-            task_names = list(losses.keys())
             grad_params = [p for p in self.model.parameters() if p.requires_grad]
+            if not grad_params or not losses:
+                raise ValueError("PCGrad requires trainable parameters and task losses")
             task_vecs = []
-            for t in task_names:
-                self.model.zero_grad()
-                losses[t].backward(retain_graph=True)
-                task_vecs.append(
-                    torch.cat([p.grad.detach().flatten() for p in grad_params if p.grad is not None])
-                )
+            connected = [False] * len(grad_params)
+            for task_name, task_loss in losses.items():
+                weighted_loss = task_loss * self.task_weights.get(task_name, 1.0)
+                task_grads = (torch.autograd.grad(weighted_loss, grad_params,
+                                                 retain_graph=True, allow_unused=True)
+                              if weighted_loss.requires_grad else [None] * len(grad_params))
+                # Every task uses the same full parameter coordinate layout.
+                # Unused private heads occupy zero slots, not shifted slots.
+                task_vecs.append(torch.cat([
+                    (value.detach() if value is not None else torch.zeros_like(param)).flatten()
+                    for param, value in zip(grad_params, task_grads)
+                ]))
+                connected = [old or value is not None for old, value in zip(connected, task_grads)]
             processed = self.gradient_surgery.pcgrad(task_vecs)
-            # Sum the resolved per-task gradients back into the parameters.
-            final_grad = torch.zeros_like(task_vecs[0])
-            for v in processed:
-                final_grad = final_grad + v
+            final_grad = torch.stack(processed).sum(0)
             offset = 0
-            for p in grad_params:
-                n = p.numel()
-                if p.grad is None:
-                    p.grad = torch.zeros_like(p)
-                p.grad = final_grad[offset:offset + n].view(p.shape).clone()
-                offset += n
+            for param, used in zip(grad_params, connected):
+                count = param.numel()
+                # Entirely disconnected parameters remain None, so Adam does
+                # not advance their moments or apply a stale momentum update.
+                param.grad = (final_grad[offset:offset + count].view_as(param).clone()
+                              if used else None)
+                offset += count
         else:
             total_loss.backward()
 
