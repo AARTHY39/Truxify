@@ -42,7 +42,7 @@ export const validateCoordinates = (pickupLat, pickupLng, dropLat, dropLng) => {
   if (!dLng.valid) {
     return dLng.error.includes('between') ? 'drop_lng must be between -180 and 180.' : 'Invalid coordinates provided.';
   }
-
+  
   return null;
 };
 
