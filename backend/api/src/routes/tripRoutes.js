@@ -73,12 +73,36 @@
 
 import express from 'express';
 import { z } from 'zod';
-import { supabase, supabaseAdmin } from '../config/db.js';
+import { supabaseAdmin } from '../config/db.js';
 import { authenticate } from '../middleware/auth.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
 import { validateParams } from '../middleware/validate.js';
-import { uuidParamSchema } from '../validation/requestSchemas.js';
+import { confirmStopSchema, uuidParamSchema } from '../validation/requestSchemas.js';
 import logger from '../middleware/logger.js';
+import { formatPaginationMeta } from '../utils/pagination.js';
+
+/**
+ * Decides whether a submitted delivery OTP is acceptable for a trip stop.
+ *
+ * Security: an order that HAS a real `delivery_otp` configured may only be
+ * unlocked with that exact OTP. The hardcoded demo OTP ("123456") is never
+ * accepted in production and is only a fallback for orders that have no real
+ * OTP configured (typically seeded demo orders). Previously the demo OTP was
+ * accepted unconditionally, so anyone who knew it could verify a stop on an
+ * order that has its own OTP and release escrow payment.
+ *
+ * @param {{ expectedOtp: string|null, submittedOtp: string }} params
+ * @returns {boolean} Whether the submitted OTP lets the stop be confirmed.
+ */
+export function verifyDeliveryOtp({ expectedOtp, submittedOtp }) {
+  if (expectedOtp) {
+    return submittedOtp === expectedOtp;
+  }
+  if (process.env.NODE_ENV === 'production') {
+    return false;
+  }
+  return submittedOtp === '123456';
+}
 
 const router = express.Router();
 const DEFAULT_EVENTS_LIMIT = 100;
@@ -296,7 +320,7 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
 
   if (events.length === 0) {
     // Flutter expects 200 or 202 for success.
-    return res.status(200).json({ error: 'Empty batch received, nothing to process.' });
+    return res.status(200).json({ message: 'Empty batch received, nothing to process.' });
   }
 
   try {
@@ -336,45 +360,39 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
     // caller owns or is assigned to. Never trust a client-supplied trip_id.
     // This runs BEFORE the idempotency short-circuit below, otherwise a
     // replayed batch would return 202 and skip authorization entirely.
-    if (req.user.role !== 'admin') {
-      const tripIds = [...new Set(events.map(event => event.trip_id).filter(Boolean))];
-
-      if (tripIds.length > 0) {
-        // Trip ids sent by the app are trip display ids ('TX-' + order display id),
-        // not the orders.id uuid. Map them back to the bare order display id before
-        // looking up the owning order, otherwise every batch is rejected with 403.
-        const orderDisplayIds = tripIds.map(tripId =>
-          typeof tripId === 'string' && tripId.startsWith('TX-') ? tripId.slice(3) : tripId
-        );
-
-        const { data: ownedOrders, error: ownershipError } = await supabase
-          .from('orders')
-          .select('order_display_id, driver_id, customer_id')
-          .in('order_display_id', orderDisplayIds);
-
-        if (ownershipError) {
-          logger.error('[SyncEngine] Failed to verify trip ownership:', ownershipError.message);
-          return res.status(500).json({ error: 'Internal Server Error' });
+    const tripIds = [...new Set(events.map(event => event.trip_id).filter(Boolean))];
+    const orderIdByTripId = new Map();
+    if (tripIds.length > 0) {
+      // App trip IDs are 'TX-' + order_display_id. Persist the resolved order
+      // UUID, matching trip_events.trip_id and the GET /:id/events reader.
+      const orderDisplayIds = tripIds.map(tripId =>
+        typeof tripId === 'string' && tripId.startsWith('TX-') ? tripId.slice(3) : tripId
+      );
+      const { data: ownedOrders, error: ownershipError } = await supabaseAdmin
+        .from('orders')
+        .select('id, order_display_id, driver_id, customer_id')
+        .in('order_display_id', orderDisplayIds);
+      if (ownershipError) {
+        logger.error('[SyncEngine] Failed to verify trip ownership:', ownershipError.message);
+        return res.status(500).json({ error: 'Internal Server Error' });
+      }
+      const orderByDisplayId = new Map((ownedOrders || []).map(order => [order.order_display_id, order]));
+      for (const tripId of tripIds) {
+        const orderDisplayId = typeof tripId === 'string' && tripId.startsWith('TX-') ? tripId.slice(3) : tripId;
+        const order = orderByDisplayId.get(orderDisplayId);
+        const isDriver = order?.driver_id === userId;
+        const isCustomer = order?.customer_id === userId;
+        if (!order || (req.user.role !== 'admin' && !isDriver && !isCustomer)) {
+          logger.warn('[SyncEngine] Rejected batch: user', userId, 'not authorised for trip', tripId);
+          return res.status(403).json({ error: 'Access Denied: You are not authorised to add events to this trip.' });
         }
-
-        const orderByDisplayId = new Map((ownedOrders || []).map(order => [order.order_display_id, order]));
-
-        for (const tripId of tripIds) {
-          const orderDisplayId = typeof tripId === 'string' && tripId.startsWith('TX-') ? tripId.slice(3) : tripId;
-          const order = orderByDisplayId.get(orderDisplayId);
-          const isDriver = order?.driver_id === userId;
-          const isCustomer = order?.customer_id === userId;
-          if (!order || (!isDriver && !isCustomer)) {
-            logger.warn('[SyncEngine] Rejected batch: user', userId, 'not authorised for trip', tripId);
-            return res.status(403).json({ error: 'Access Denied: You are not authorised to add events to this trip.' });
-          }
-        }
+        orderIdByTripId.set(tripId, order.id);
       }
     }
 
     // 3. Check Idempotency (Prevent double processing)
     // We check if this exact batch has already been processed recently.
-    const { data: existingBatch } = await supabase
+    const { data: existingBatch } = await supabaseAdmin
       .from('processed_batches')
       .select('id')
       .eq('idempotency_key', idempotencyKey)
@@ -384,7 +402,7 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
     if (existingBatch) {
       logger.info('[SyncEngine] Ignored duplicate batch:', idempotencyKey);
       // Return 202 Accepted so the Flutter app marks them as synced locally
-      return res.status(202).json({ error: 'Batch already processed.' });
+      return res.status(202).json({ message: 'Batch already processed.' });
     }
 
     const recordsToInsert = events.map(event => {
@@ -393,9 +411,7 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
       return {
         event_id: event.id,
         user_id: userId,
-        trip_id: (typeof event.trip_id === 'string' && event.trip_id.startsWith('TX-'))
-          ? event.trip_id.slice(3)
-          : (event.trip_id || null),
+        trip_id: event.trip_id ? orderIdByTripId.get(event.trip_id) : null,
         event_type: event.type,
         event_timestamp: event.occurred_at,
         latitude: event.payload?.lat !== undefined ? Number(event.payload.lat) : null,
@@ -405,12 +421,12 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
       };
     });
 
-    // 3. Bulk Insert / Upsert into the trip_events table
-    // Upsert ensures that if a specific event ID already exists, it just updates it
-    // rather than failing the whole batch.
-    const { error: insertError } = await supabase
+    // 3. Insert immutable events using the server client after ownership checks.
+    // A retry or globally colliding event ID must never rewrite an existing
+    // event, including one uploaded by another user.
+    const { error: insertError } = await supabaseAdmin
       .from('trip_events')
-      .upsert(recordsToInsert, { onConflict: 'event_id' });
+      .upsert(recordsToInsert, { onConflict: 'event_id', ignoreDuplicates: true });
 
     if (insertError) {
       logger.error('[SyncEngine] Bulk Insert Failed:', insertError.message);
@@ -429,7 +445,7 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
     // 4. Log the successful batch using the idempotency key
     // This prevents the same batch from being uploaded again if the client crashes
     // before it can mark them as synced in its local SQLite db.
-    const { error: idempotencyError } = await supabase
+    const { error: idempotencyError } = await supabaseAdmin
       .from('processed_batches')
       .insert({
         idempotency_key: idempotencyKey,
@@ -533,6 +549,9 @@ router.post('/events/batch', authenticate, userLimiter, validateBatchPayload(bat
 router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSchema), async (req, res) => {
   const tripId = req.params.id;
   const { type, sort, min_lat, max_lat, min_lng, max_lng } = req.query;
+    if (sort !== undefined && sort !== 'asc' && sort !== 'desc') {
+    return res.status(400).json({ error: 'Invalid sort parameter. Must be either asc or desc.' });
+  }
   const isAscending = sort === 'asc';
   const parsedPage = parsePositiveIntegerQuery(req.query.page, 1, Number.MAX_SAFE_INTEGER);
   const parsedLimit = parsePositiveIntegerQuery(req.query.limit, DEFAULT_EVENTS_LIMIT, MAX_EVENTS_LIMIT);
@@ -571,11 +590,10 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
       }
     }
 
-    const tripDisplayId = order.order_display_id;
-    let eventsQuery = supabase
+    let eventsQuery = supabaseAdmin
       .from('trip_events')
       .select('event_id, user_id, trip_id, event_type, event_timestamp, latitude, longitude, metadata, created_at', { count: 'exact' })
-      .eq('trip_id', tripDisplayId);
+      .eq('trip_id', order.id);
 
     if (type && typeof type === 'string') {
       eventsQuery = eventsQuery.eq('event_type', type);
@@ -620,15 +638,13 @@ router.get('/:id/events', authenticate, userLimiter, validateParams(uuidParamSch
 
     const filteredEvents = events || [];
 
+    const pagination = formatPaginationMeta(count || 0, page, limit);
+
     return res.json({
       trip_id: tripId,
       events: events || [],
-      pagination: {
-        page,
-        limit,
-        total: count || 0,
-        totalPages: count ? Math.ceil(count / limit) : 0,
-      },
+      data: events || [],
+      pagination
     });
   } catch (err) {
     return res.status(500).json({ error: 'Internal Server Error', details: err?.message });
@@ -662,6 +678,10 @@ function canAccessTrip(user, trip) {
 // orders.order_display_id or an orders.id. Returns { trip }, { order } or
 // { error }.
 async function findTripContext(ref) {
+  if (!ref || typeof ref !== 'string' || ref.trim().length === 0 || ref.length > 100) {
+    return { error: { status: 400, message: 'Invalid or malformed trip reference identifier.' } };
+  }
+
   let { data: trip, error: tripErr } = await supabaseAdmin
     .from('trips')
     .select('id, trip_display_id, driver_id, order_id, status')
@@ -738,18 +758,34 @@ async function requireOwnedTrip(req, res, ctx) {
 router.get('/:id/items', authenticate, userLimiter, async (req, res) => {
   try {
     const ctx = await findTripContext(req.params.id);
-    if (ctx.error) return res.status(500).json({ error: 'Internal Server Error', details: ctx.error.message });
+    if (ctx.error) return res.status(ctx.error.status || 500).json(ctx.error.body || { error: ctx.error.message });
     const owned = await requireOwnedTrip(req, res, ctx);
     if (owned.error) return res.status(owned.error.status).json(owned.error.body);
 
-    const { data: items, error: itemsErr } = await supabaseAdmin
+    const parsedPage = parsePositiveIntegerQuery(req.query.page, 1, Number.MAX_SAFE_INTEGER);
+    const parsedLimit = parsePositiveIntegerQuery(req.query.limit, DEFAULT_EVENTS_LIMIT, MAX_EVENTS_LIMIT);
+    if (parsedPage.error || parsedLimit.error) {
+      return res.status(400).json({ error: parsedPage.error || parsedLimit.error });
+    }
+    const page = parsedPage.value;
+    const limit = parsedLimit.value;
+    const offset = (page - 1) * limit;
+
+    const { data: items, error: itemsErr, count } = await supabaseAdmin
       .from('trip_items')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('trip_display_id', owned.trip.trip_display_id)
-      .order('sort_order', { ascending: true });
+      .order('sort_order', { ascending: true })
+      .range(offset, offset + limit - 1);
 
     if (itemsErr) return res.status(500).json({ error: 'Failed to fetch trip items.', details: itemsErr.message });
-    return res.json(items || []);
+    const pagination = formatPaginationMeta(count || 0, page, limit);
+
+    return res.json({
+      items: items || [],
+      data: items || [],
+      pagination
+    });
   } catch (err) {
     logger.error('[Trips] Fetch trip items error:', err);
     return res.status(500).json({ error: 'Internal Server Error' });
@@ -763,18 +799,34 @@ router.get('/:id/items', authenticate, userLimiter, async (req, res) => {
 router.get('/:id/stops', authenticate, userLimiter, async (req, res) => {
   try {
     const ctx = await findTripContext(req.params.id);
-    if (ctx.error) return res.status(500).json({ error: 'Internal Server Error', details: ctx.error.message });
+    if (ctx.error) return res.status(ctx.error.status || 500).json(ctx.error.body || { error: ctx.error.message });
     const owned = await requireOwnedTrip(req, res, ctx);
     if (owned.error) return res.status(owned.error.status).json(owned.error.body);
 
-    const { data: stops, error: stopsErr } = await supabaseAdmin
+    const parsedPage = parsePositiveIntegerQuery(req.query.page, 1, Number.MAX_SAFE_INTEGER);
+    const parsedLimit = parsePositiveIntegerQuery(req.query.limit, DEFAULT_EVENTS_LIMIT, MAX_EVENTS_LIMIT);
+    if (parsedPage.error || parsedLimit.error) {
+      return res.status(400).json({ error: parsedPage.error || parsedLimit.error });
+    }
+    const page = parsedPage.value;
+    const limit = parsedLimit.value;
+    const offset = (page - 1) * limit;
+
+    const { data: stops, error: stopsErr, count } = await supabaseAdmin
       .from('trip_stops')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('trip_display_id', owned.trip.trip_display_id)
-      .order('sort_order', { ascending: true });
+      .order('sort_order', { ascending: true })
+      .range(offset, offset + limit - 1);
 
     if (stopsErr) return res.status(500).json({ error: 'Failed to fetch trip stops.', details: stopsErr.message });
-    return res.json(stops || []);
+    const pagination = formatPaginationMeta(count || 0, page, limit);
+
+    return res.json({
+      stops: stops || [],
+      data: stops || [],
+      pagination
+    });
   } catch (err) {
     logger.error('[Trips] Fetch trip stops error:', err);
     return res.status(500).json({ error: 'Internal Server Error' });
@@ -788,18 +840,34 @@ router.get('/:id/stops', authenticate, userLimiter, async (req, res) => {
 router.get('/:id/route-points', authenticate, userLimiter, async (req, res) => {
   try {
     const ctx = await findTripContext(req.params.id);
-    if (ctx.error) return res.status(500).json({ error: 'Internal Server Error', details: ctx.error.message });
+    if (ctx.error) return res.status(ctx.error.status || 500).json(ctx.error.body || { error: ctx.error.message });
     const owned = await requireOwnedTrip(req, res, ctx);
     if (owned.error) return res.status(owned.error.status).json(owned.error.body);
 
-    const { data: points, error: pointsErr } = await supabaseAdmin
+    const parsedPage = parsePositiveIntegerQuery(req.query.page, 1, Number.MAX_SAFE_INTEGER);
+    const parsedLimit = parsePositiveIntegerQuery(req.query.limit, DEFAULT_EVENTS_LIMIT, MAX_EVENTS_LIMIT);
+    if (parsedPage.error || parsedLimit.error) {
+      return res.status(400).json({ error: parsedPage.error || parsedLimit.error });
+    }
+    const page = parsedPage.value;
+    const limit = parsedLimit.value;
+    const offset = (page - 1) * limit;
+
+    const { data: points, error: pointsErr, count } = await supabaseAdmin
       .from('route_map_points')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('trip_display_id', owned.trip.trip_display_id)
-      .order('sort_order', { ascending: true });
+      .order('sort_order', { ascending: true })
+      .range(offset, offset + limit - 1);
 
     if (pointsErr) return res.status(500).json({ error: 'Failed to fetch route points.', details: pointsErr.message });
-    return res.json(points || []);
+    const pagination = formatPaginationMeta(count || 0, page, limit);
+
+    return res.json({
+      route_points: points || [],
+      data: points || [],
+      pagination
+    });
   } catch (err) {
     logger.error('[Trips] Fetch route points error:', err);
     return res.status(500).json({ error: 'Internal Server Error' });
@@ -821,6 +889,11 @@ router.put('/:id/start', authenticate, userLimiter, async (req, res) => {
     if (ctx.trip) {
       if (!canAccessTrip(req.user, ctx.trip)) {
         return res.status(403).json({ error: 'Access Denied: Trip does not belong to you.' });
+      }
+      // Only an active trip is an idempotent successful start. Never report
+      // completed/cancelled (or unknown-state) trips as newly running.
+      if (ctx.trip.status !== 'active') {
+        return res.status(409).json({ error: `Trip cannot be started: status is ${ctx.trip.status}.` });
       }
       return res.json(ctx.trip);
     }
@@ -992,11 +1065,9 @@ router.put('/:id/stops/:stopId/complete', authenticate, userLimiter, async (req,
 router.post('/:id/confirm-stop', authenticate, userLimiter, async (req, res) => {
   try {
     const { stopId, otp } = req.body || {};
-    if (!stopId || typeof stopId !== 'string') {
-      return res.status(400).json({ error: 'stopId is required.' });
-    }
-    if (!otp || typeof otp !== 'string' || otp.trim().length !== 6) {
-      return res.status(400).json({ error: 'A valid 6-digit OTP is required.' });
+    const parsedBody = confirmStopSchema.safeParse({ stopId, otp });
+    if (!parsedBody.success) {
+      return res.status(400).json({ error: parsedBody.error.issues[0]?.message || 'Invalid confirmation payload.' });
     }
 
     const ctx = await findTripContext(req.params.id);
@@ -1015,8 +1086,12 @@ router.post('/:id/confirm-stop', authenticate, userLimiter, async (req, res) => 
     if (!stop) return res.status(404).json({ error: 'Stop not found on this trip.' });
     if (stop.is_completed) return res.status(409).json({ error: 'Stop has already been confirmed.' });
 
-    // Validate OTP against linked order or default mock OTP (123456)
-    let expectedOtp = '123456';
+    // Validate OTP against the linked order's real delivery OTP. The hardcoded
+    // demo OTP (123456) is accepted ONLY when the order has no delivery_otp
+    // configured AND the server is not running in production. Previously the
+    // default was accepted unconditionally, so anyone knowing it could verify a
+    // stop on an order that HAS its own OTP and release escrow payment.
+    let expectedOtp = null;
     if (owned.trip.order_id) {
       const { data: linkedOrder } = await supabaseAdmin
         .from('orders')
@@ -1029,7 +1104,7 @@ router.post('/:id/confirm-stop', authenticate, userLimiter, async (req, res) => 
     }
 
     const cleanedSubmittedOtp = otp.trim();
-    if (cleanedSubmittedOtp !== expectedOtp && cleanedSubmittedOtp !== '123456') {
+    if (!verifyDeliveryOtp({ expectedOtp, submittedOtp: cleanedSubmittedOtp })) {
       return res.status(400).json({ error: 'Invalid delivery OTP provided.' });
     }
 
@@ -1112,3 +1187,5 @@ router.post('/:id/confirm-stop', authenticate, userLimiter, async (req, res) => 
 });
 
 export default router;
+
+

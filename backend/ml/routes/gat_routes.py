@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from typing import Optional, List, Dict, Any
 import torch
 import numpy as np
@@ -52,23 +52,34 @@ class GraphRequest(BaseModel):
     nodes: List[Node]
     edges: List[Edge]
 
+    @model_validator(mode="after")
+    def validate_topology(self):
+        node_ids = [node.id for node in self.nodes]
+        known = set(node_ids)
+        if len(known) != len(node_ids):
+            raise ValueError("Traffic graph node IDs must be unique")
+        if any(edge.source not in known or edge.target not in known for edge in self.edges):
+            raise ValueError("Traffic graph edges must reference declared nodes")
+        return self
+
 @router.post("/build-graph")
 async def build_graph(request: GraphRequest):
     """Build traffic graph"""
     try:
-        graph = builder.build_graph(
+        request_builder = TrafficGraphBuilder()
+        graph = request_builder.build_graph(
             [node.dict() for node in request.nodes],
             [edge.dict() for edge in request.edges]
         )
-        data = builder.get_pytorch_data()
-        
+        data = request_builder.get_pytorch_data(graph)
+
         return {
             'success': True,
             'data': {
                 'nodes': len(graph.nodes),
                 'edges': len(graph.edges),
                 'features': list(data.x.shape),
-                'is_connected': nx.is_connected(graph)
+                'is_connected': nx.is_connected(graph) if graph.number_of_nodes() else False
             },
             'timestamp': datetime.now().isoformat()
         }
@@ -83,20 +94,20 @@ async def predict_traffic(request: GraphRequest):
     """Predict traffic using GAT"""
     try:
         # Build graph
-        graph = builder.build_graph(
+        request_builder = TrafficGraphBuilder()
+        graph = request_builder.build_graph(
             [node.dict() for node in request.nodes],
             [edge.dict() for edge in request.edges]
         )
-        data = builder.get_pytorch_data()
-        
+        data = request_builder.get_pytorch_data(graph)
+
         # Generate synthetic node features for time steps
         # Model expects (batch_size, num_nodes, time_steps, features); build
         # (1, num_nodes, 1, features) so batch_size == 1 and time_steps == 1.
-        node_features = data.x.unsqueeze(0).unsqueeze(2).contiguous()
-        
-        # Predict
+        node_features = data.x.unsqueeze(0)        # (1, num_nodes, features)
+        node_features = node_features.unsqueeze(2) # (1, num_nodes, 1, features) - aligns with (batch, num_nodes, time_steps, features)
         predictions = trainer.model.predict_traffic(node_features, data.edge_index)
-        
+
         return {
             'success': True,
             'data': {
@@ -118,18 +129,19 @@ async def train_model(request: GraphRequest):
     """Train GAT model"""
     try:
         # Build graph
-        graph = builder.build_graph(
+        request_builder = TrafficGraphBuilder()
+        graph = request_builder.build_graph(
             [node.dict() for node in request.nodes],
             [edge.dict() for edge in request.edges]
         )
-        data = builder.get_pytorch_data()
-        
+        data = request_builder.get_pytorch_data(graph)
+
         # Generate synthetic targets
         targets = torch.randn(data.x.shape[0], trainer.model.prediction_horizon)
-        
+
         # Train
         results = trainer.train(data, targets, epochs=50)
-        
+
         return {
             'success': True,
             'data': results,

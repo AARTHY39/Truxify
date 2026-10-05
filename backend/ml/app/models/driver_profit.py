@@ -17,7 +17,7 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-from .base import save_model, load_model, model_exists
+from .base import save_model, load_model_snapshot, model_exists
 
 logger = logging.getLogger(__name__)
 
@@ -40,28 +40,29 @@ def _generate_synthetic_data(n_samples: int = 2000) -> tuple:
     y : ndarray of shape (n_samples,)
         Target: net profit (₹).
     """
-    np.random.seed(42)
+    # Own the stream per invocation while preserving legacy seed42 draws.
+    rng = np.random.RandomState(42)
 
-    route_distance = np.random.uniform(50, 2000, n_samples)                 # km
-    fuel_price = np.random.uniform(95, 115, n_samples)                      # ₹/L
-    toll_estimate = route_distance * np.random.uniform(1.5, 4.0, n_samples) # ₹
-    truck_mileage = np.random.uniform(3, 8, n_samples)                      # km/L
-    cargo_weight = np.random.uniform(500, 25_000, n_samples)                # kg
-    avg_speed = np.random.uniform(40, 60, n_samples)                        # km/h
+    route_distance = rng.uniform(50, 2000, n_samples)                 # km
+    fuel_price = rng.uniform(95, 115, n_samples)                      # ₹/L
+    toll_estimate = route_distance * rng.uniform(1.5, 4.0, n_samples) # ₹
+    truck_mileage = rng.uniform(3, 8, n_samples)                      # km/L
+    cargo_weight = rng.uniform(500, 25_000, n_samples)                # kg
+    avg_speed = rng.uniform(40, 60, n_samples)                        # km/h
     trip_duration = route_distance / avg_speed                               # hours
 
     # Revenue model
-    base_rate = np.random.uniform(1.8, 3.5, n_samples)                     # ₹/km base
+    base_rate = rng.uniform(1.8, 3.5, n_samples)                     # ₹/km base
     weight_factor = 1 + (cargo_weight / 25_000) * 0.5                       # heavier → more ₹
     revenue = base_rate * route_distance * weight_factor
 
     # Costs
     fuel_cost = (route_distance / truck_mileage) * fuel_price
-    maintenance = route_distance * np.random.uniform(0.8, 2.0, n_samples)  # ₹/km
+    maintenance = route_distance * rng.uniform(0.8, 2.0, n_samples)  # ₹/km
 
     net_profit = revenue - fuel_cost - toll_estimate - maintenance
     # Add noise
-    net_profit += np.random.normal(0, 500, n_samples)
+    net_profit += rng.normal(0, 500, n_samples)
 
     X = np.column_stack([
         route_distance,
@@ -84,6 +85,29 @@ FEATURE_NAMES = [
     "trip_duration",
 ]
 
+# These are the feature-domain bounds used to generate the training data.
+# They are persisted with each model generation and enforced at inference so
+# the regressor does not silently extrapolate beyond its training domain.
+TRAINING_FEATURE_RANGES = {
+    "route_distance": {"min": 50.0, "max": 2000.0},
+    "fuel_price": {"min": 95.0, "max": 115.0},
+    "toll_estimate": {"min": 75.0, "max": 8000.0},
+    "truck_mileage": {"min": 3.0, "max": 8.0},
+    "cargo_weight": {"min": 500.0, "max": 25_000.0},
+    "trip_duration": {"min": 50.0 / 60.0, "max": 50.0},
+}
+
+
+def _feature_statistics(X: np.ndarray) -> dict:
+    """Return summary statistics for the training features."""
+    return {
+        name: {
+            "mean": float(np.mean(X[:, index])),
+            "std": float(np.std(X[:, index])),
+        }
+        for index, name in enumerate(FEATURE_NAMES)
+    }
+
 
 # ---------------------------------------------------------------------------
 # Predictor class
@@ -95,6 +119,7 @@ class DriverProfitPredictor:
 
     def __init__(self) -> None:
         self.model: Optional[GradientBoostingRegressor] = None
+        self.feature_ranges = dict(TRAINING_FEATURE_RANGES)
 
     # -- persistence --------------------------------------------------------
 
@@ -118,6 +143,11 @@ class DriverProfitPredictor:
         rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
         r2 = r2_score(y_test, y_pred)
 
+        self.feature_ranges = {
+            feature: dict(bounds)
+            for feature, bounds in TRAINING_FEATURE_RANGES.items()
+        }
+
         metrics = {
             "mae": float(mae),
             "rmse": rmse,
@@ -125,24 +155,63 @@ class DriverProfitPredictor:
             "n_samples": len(X),
             "feature_names": FEATURE_NAMES,
         }
+        training_meta = {
+            "feature_ranges": self.feature_ranges,
+            "feature_statistics": _feature_statistics(X),
+        }
 
-        save_model(self.model, MODEL_NAME, metrics)
+        save_model(self.model, MODEL_NAME, metrics, training_meta=training_meta)
         logger.info("Driver-profit model trained. R2: %.3f, MAE: %.1f", r2, mae)
         return metrics
 
     def load(self) -> None:
-        """Load a persisted model, auto-training if none exists."""
+        """Load a persisted model, auto-training if none exists or metadata is incomplete."""
         if not model_exists(MODEL_NAME):
             self.train()
             return
 
-        loaded = load_model(MODEL_NAME)
-        if loaded is None:
+        snapshot = load_model_snapshot(MODEL_NAME)
+        if snapshot is None or snapshot.model is None:
             self.train()
             return
+
+        loaded = snapshot.model
+        meta = snapshot.metadata or {}
+        training_meta = meta.get("training_meta") or {}
+        feature_ranges = training_meta.get("feature_ranges")
+        if not isinstance(feature_ranges, dict) or set(feature_ranges) != set(FEATURE_NAMES):
+            logger.warning("Driver-profit model has no feature-domain metadata; retraining")
+            self.train()
+            return
+
         self.model = loaded
+        self.feature_ranges = {
+            feature: {
+                "min": float(feature_ranges[feature]["min"]),
+                "max": float(feature_ranges[feature]["max"]),
+            }
+            for feature in FEATURE_NAMES
+        }
 
     # -- inference ----------------------------------------------------------
+
+    def _validate_feature_domain(self, values: dict[str, float]) -> None:
+        """Reject requests containing features outside the training domain."""
+        for feature, value in values.items():
+            if not np.isfinite(value):
+                raise ValueError(f"{feature} must be a finite number")
+
+            bounds = self.feature_ranges.get(feature)
+            if not bounds:
+                raise ValueError(f"No training range is available for {feature}")
+
+            minimum = bounds["min"]
+            maximum = bounds["max"]
+            if value < minimum or value > maximum:
+                raise ValueError(
+                    f"{feature}={value} is outside the model training range "
+                    f"[{minimum}, {maximum}]"
+                )
 
     def predict(
         self,
@@ -173,6 +242,16 @@ class DriverProfitPredictor:
         """
         if self.model is None:
             self.load()
+
+        values = {
+            "route_distance": route_distance,
+            "fuel_price": fuel_price,
+            "toll_estimate": toll_estimate,
+            "truck_mileage": truck_mileage,
+            "cargo_weight": cargo_weight,
+            "trip_duration": trip_duration,
+        }
+        self._validate_feature_domain(values)
 
         features = np.array([[
             route_distance,

@@ -92,6 +92,7 @@
  */
 
 import express from 'express';
+import { getStatementPayout } from '../services/driver/statementPayout.js';
 import { authenticate } from '../middleware/auth.js';
 import { userLimiter } from '../middleware/rateLimiter.js';
 import { z } from 'zod';
@@ -115,7 +116,6 @@ function sanitizeNumberPlate(plate) {
   if (!plate || typeof plate !== 'string') return '';
   return plate.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
-
 
 /**
  * @openapi
@@ -221,7 +221,6 @@ router.get('/customer-stats', authenticate, userLimiter, async (req, res) => {
  */
 router.get('/:id/name', authenticate, userLimiter, validateParams(uuidParamSchema), async (req, res) => {
   try {
-    // Scope to authenticated user to prevent PII enumeration via arbitrary UUIDs
     const targetId = req.user?.id;
     if (!targetId) return res.status(403).json({ error: 'Forbidden' });
 
@@ -309,9 +308,9 @@ router.put('/wallet', authenticate, userLimiter, validateBody(updateWalletSchema
         .from('driver_details')
         .upsert({ user_id: userId, polygon_wallet_address: normalized }, { onConflict: 'user_id' });
 
-    if (driverDetailsErr) {
-      return res.status(500).json({ error: 'Failed to sync wallet to driver details.', details: driverDetailsErr.message });
-    }
+      if (driverDetailsErr) {
+        return res.status(500).json({ error: 'Failed to sync wallet to driver details.', details: driverDetailsErr.message });
+      }
     }
 
     if (req.user && req.user.uid) {
@@ -407,8 +406,6 @@ router.put('/', authenticate, userLimiter, validateBody(updateProfileSchema), as
       }
     }
 
-    // Invalidate the profile cache so that the next request retrieves fresh profile data.
-    // We await to ensure cache consistency — failures are caught and logged internally.
     if (req.user && req.user.uid) {
       try { await invalidateCachedProfile(req.user.uid); } catch (_) { /* logged internally */ }
     }
@@ -479,7 +476,6 @@ router.put('/fcm-token', authenticate, userLimiter, validateBody(updateFcmTokenS
       return res.status(500).json({ error: 'Failed to update FCM token.', details: error.message });
     }
 
-    // Invalidate Redis cache — next request will refetch the profile with the new token
     if (req.user.uid) {
       try { await invalidateCachedProfile(req.user.uid); } catch (_) { /* logged internally */ }
     }
@@ -535,21 +531,18 @@ router.put('/fcm-token', authenticate, userLimiter, validateBody(updateFcmTokenS
  *             schema:
  *               $ref: '#/components/schemas/DriverStatementResponse'
  */
-// GET DRIVER STATEMENT
 router.get('/driver/statement', authenticate, requirePolicy('profile:view-statement'), userLimiter, validateQuery(driverStatementSchema), async (req, res) => {
   const userId = req.user.id;
   const { start_date, end_date, sort_by, format } = req.query;
 
   try {
-    // PostgREST caps a single response at 1000 rows, so page through the
-    // whole history instead of silently truncating the statement.
     const pageSize = 1000;
     const trips = [];
 
     while (true) {
       let pageQuery = supabaseAdmin
         .from('orders')
-        .select('id, order_display_id, status, pickup_address, drop_address, pickup_date, total_amount, base_freight, toll_estimate, platform_fee, created_at')
+        .select('id, order_display_id, status, pickup_address, drop_address, pickup_date, bid_amount, total_amount, base_freight, toll_estimate, platform_fee, created_at')
         .eq('driver_id', userId)
         .in('status', ['delivered', 'payment_released'])
         .order('pickup_date', { ascending: true })
@@ -574,11 +567,8 @@ router.get('/driver/statement', authenticate, requirePolicy('profile:view-statem
       }
     }
 
-    // Pages were fetched oldest-first; restore newest-first ordering.
     trips.reverse();
 
-    // Fetch the driver's name/phone so the statement PDF shows the real driver
-    // instead of the app-side 'Driver' fallback.
     const { data: profile, error: profileError } = await supabaseAdmin
       .from('profiles')
       .select('full_name, phone')
@@ -589,7 +579,6 @@ router.get('/driver/statement', authenticate, requirePolicy('profile:view-statem
       return res.status(500).json({ error: 'Failed to fetch driver profile.', details: profileError.message });
     }
 
-    // Compute totals
     let totalBaseFreight = 0;
     let totalPlatformFees = 0;
     let totalTollEstimate = 0;
@@ -599,7 +588,7 @@ router.get('/driver/statement', authenticate, requirePolicy('profile:view-statem
       const baseFreight = Number(trip.base_freight) || 0;
       const platformFee = Number(trip.platform_fee) || 0;
       const tollEstimate = Number(trip.toll_estimate) || 0;
-      const netEarnings = baseFreight - platformFee;
+      const netEarnings = getStatementPayout(trip);
 
       totalBaseFreight += baseFreight;
       totalPlatformFees += platformFee;
@@ -620,15 +609,15 @@ router.get('/driver/statement', authenticate, requirePolicy('profile:view-statem
       };
     });
 
-    // Apply sorting before formatting output
     if (sort_by === 'net_earnings') {
       tripsList.sort((a, b) => (b.net_earnings - a.net_earnings) || new Date(b.pickup_date) - new Date(a.pickup_date));
     } else if (sort_by === 'base_freight') {
       tripsList.sort((a, b) => (b.base_freight - a.base_freight) || new Date(b.pickup_date) - new Date(a.pickup_date));
+    } else if (sort_by === 'pickup_date') {
+      tripsList.sort((a, b) => new Date(b.pickup_date) - new Date(a.pickup_date));
     }
 
     if (format === 'csv') {
-      // Optimize memory: construct CSV string directly using string builder/loop
       const sanitizeCsvValue = (val) => {
         if (val === null || val === undefined) return '""';
         let str = String(val).replace(/[\r\n]+/g, ' ');
@@ -696,10 +685,6 @@ router.get('/driver/statement', authenticate, requirePolicy('profile:view-statem
  *       404:
  *         description: Profile not found
  */
-// ADMIN CACHE INVALIDATION
-// Invalidates the profile cache for a specific user, forcing the next
-// authenticated request to refetch from Supabase. Use this after admin
-// operations that change role, status, or other cached profile fields.
 router.delete('/admin/cache/:userId', authenticate, userLimiter, requirePolicy('admin:invalidate-cache'), auditLog({ action: 'admin:invalidate-cache', resourceType: 'user_profile_cache' }), validateParams(z.object({ userId: z.string().min(1, 'userId is required') })), async (req, res) => {
   try {
     const targetUserId = req.params.userId;
@@ -751,17 +736,10 @@ router.delete('/admin/cache/:userId', authenticate, userLimiter, requirePolicy('
   }
 });
 
-
-// GET DRIVER PERFORMANCE STATISTICS
 router.get('/driver/performance-stats', authenticate, requirePolicy('profile:view-statement'), userLimiter, async (req, res) => {
   const userId = req.user.id;
 
   try {
-    // 1. Fetch completed orders / trips for stats.
-    // `orders` has no distance_km / customer_rating / on_time columns, so the
-    // metrics below are derived from the data that actually exists: trips for
-    // distance, the ratings table for the average rating, and the delivered
-    // order set for the on-time percentage.
     const { data: orders, error } = await supabaseAdmin
       .from('orders')
       .select('id, order_display_id, base_freight, created_at, status, updated_at')
@@ -794,22 +772,16 @@ router.get('/driver/performance-stats', authenticate, requirePolicy('profile:vie
     const completedOrders = orders || [];
     const totalDeliveries = completedOrders.length;
 
-    // Distance is stored as a text field on completed trips (e.g. '620 km').
     const totalDistance = (tripRows || []).reduce((acc, trip) => {
       const match = trip.distance ? String(trip.distance).match(/(\d+(?:\.\d+)?)/) : null;
       return acc + (match ? Number(match[1]) : 0);
     }, 0);
 
-    // Average rating is derived from the ratings table.
     const ratingsList = (ratingRows || []).map(r => Number(r.stars)).filter(r => !isNaN(r) && r > 0);
     const averageRating = ratingsList.length > 0 ? Number((ratingsList.reduce((a, b) => a + b, 0) / ratingsList.length).toFixed(1)) : null;
 
-    // On-time percentage: the query only returns delivered / payment_released
-    // orders, so every order in the set counts as an on-time completion.
     const onTimePercentage = totalDeliveries > 0 ? 100 : null;
 
-    // Data-availability flags — null/missing distance, ratings, or deliveries
-    // are never guessed or fabricated.
     const distancedTrips = (tripRows || []).filter(t => t.distance !== null && t.distance !== undefined);
     const insufficientData = {
       distanceKm: distancedTrips.length < totalDeliveries,
@@ -817,10 +789,8 @@ router.get('/driver/performance-stats', authenticate, requirePolicy('profile:vie
       onTime: totalDeliveries === 0,
     };
 
-    // Lifetime earnings (base_freight is stored in paisa; report in rupees)
     const lifetimeEarnings = completedOrders.reduce((acc, t) => acc + (Number(t.base_freight) || 0), 0) / 100;
 
-    // Monthly summary (current month)
     const currentMonth = new Date().toISOString().slice(0, 7);
     const monthlyTrips = completedOrders.filter(t => t.created_at && t.created_at.startsWith(currentMonth));
     const monthlyEarnings = monthlyTrips.reduce((acc, t) => acc + (Number(t.base_freight) || 0), 0) / 100;
@@ -831,7 +801,6 @@ router.get('/driver/performance-stats', authenticate, requirePolicy('profile:vie
       earnings: Number(monthlyEarnings.toFixed(2))
     };
 
-    // Achievement badges based on milestones
     const badges = [];
     if (totalDeliveries >= 1) badges.push({ id: 'first_trip', title: 'Road Warrior', description: 'Completed first delivery successfully' });
     if (totalDeliveries >= 10) badges.push({ id: 'pro_driver', title: 'Logistics Pro', description: 'Completed 10+ deliveries' });
@@ -855,6 +824,3 @@ router.get('/driver/performance-stats', authenticate, requirePolicy('profile:vie
 });
 
 export default router;
-
-
-// Resolves #2046: DELETE /admin/cache/:userId endpoint

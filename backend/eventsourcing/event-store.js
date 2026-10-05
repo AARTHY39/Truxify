@@ -1,3 +1,4 @@
+import { assertOrderReadModelRow, deriveOrderStatus } from '../api/src/core/orders/read-model-schema.js';
 import { randomUUID as uuidv4 } from 'node:crypto';
 import logger from '../api/src/middleware/logger.js';
 import { supabase, supabaseAdmin } from '../api/src/config/db.js';
@@ -7,6 +8,7 @@ import spanFactory from '../api/src/core/telemetry/SpanFactory.js';
 import { context, trace, SpanStatusCode } from '@opentelemetry/api';
 
 import { EventStoreCore, normalizeEventRow } from './event-sourcing-core.js';
+import { rebuildFromPages } from './rebuild-stream.js';
 import {
   EventStoreValidationError,
   EventStoreVersionConflictError,
@@ -417,22 +419,38 @@ class EventStore {
      * after a rebuild.
      */
     async _upsertOrderReadModel(orderId, state, eventType, version) {
+        const status = deriveOrderStatus(state);
+        const timeline = state?.timeline ?? null;
+
+        const row = {
+            order_id: orderId,
+            payload: state,
+            event_type: eventType,
+            version: version ?? state?.version,
+            status,
+            timeline,
+            updated_at: new Date().toISOString()
+        };
+
+        try {
+            assertOrderReadModelRow(row);
+        } catch (assertionErr) {
+            this.logger.error('Order read model row assertion failed:', assertionErr);
+            throw assertionErr;
+        }
+
         const { error } = await this._client
             .from('orders_read_model')
-            .upsert([{
-                order_id: orderId,
-                payload: state,
-                event_type: eventType,
-                version: version ?? state?.version,
-                updated_at: new Date().toISOString()
-            }], {
+            .upsert([row], {
                 onConflict: 'order_id'
             });
 
         if (error) {
             this.logger.error('Failed to update order read model:', error);
+            throw error;
         }
     }
+
 
     async updateOrderReadModel(event) {
         const state = await this.getAggregateState(event.aggregateId);
@@ -503,6 +521,16 @@ class EventStore {
         };
     }
 
+    async rebuildProjectionsFromPages(orderPages, driverPages) {
+        return rebuildFromPages({
+            orderPages,
+            driverPages,
+            getSnapshot: (id) => this._getCore().getSnapshot(id),
+            writeOrder: (...args) => this._upsertOrderReadModel(...args),
+            writeDriver: (event) => this.updateDriverReadModel(event),
+        });
+    }
+
     // ============ Event Publishing ============
 
     async publishEvents(events) {
@@ -525,14 +553,27 @@ class EventStore {
             this._eventBus.publish(baseEvent, { deduplicate: false });
             this.logger.info(`📤 Event published via EventBus: ${event.type}`);
         } else {
+            // The consumer uses eventId (or the Kafka key) as its idempotency
+            // claim. An aggregate ID would cause separate updates to the same
+            // order to collide, while a newly generated ID would break retries.
+            const eventId = event.id ?? event.eventId;
+            if (typeof eventId !== 'string' || !eventId.trim()) {
+                throw new EventStoreValidationError('Cannot publish an event without a stable event ID');
+            }
             const topic = this.getEventTopic(event.type);
-            const enriched = ContextPropagator.injectIntoEventPayload(event);
+            const enriched = ContextPropagator.injectIntoEventPayload({
+                ...event,
+                eventId,
+                eventType: event.type,
+                orderId: event.aggregateId,
+                metadata: { ...event.metadata, eventId },
+            });
             const kafkaModule = await this._loadKafka();
             if (!kafkaModule) {
                 this.logger.warn(`Kafka unavailable — skipping publish of ${event.type}`);
                 return;
             }
-            await kafkaModule.default.publishEvent(topic, enriched, event.aggregateId);
+            await kafkaModule.default.publishEvent(topic, enriched, eventId);
             this.logger.info(`📤 Event published to Kafka: ${event.type}`);
         }
     }
@@ -572,7 +613,10 @@ class EventStore {
             .select('*');
 
         if (filters.status) {
-            query = query.eq('payload->>status', filters.status);
+            // Normalize to lowercase so callers that pass uppercase values
+            // (e.g. 'CREATED' from the write side) still match the canonical
+            // lowercase values stored in the status column.
+            query = query.eq('status', filters.status.toLowerCase());
         }
         if (filters.customerId) {
             query = query.eq('payload->>customerId', filters.customerId);

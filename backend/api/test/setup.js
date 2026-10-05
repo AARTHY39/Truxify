@@ -18,6 +18,11 @@ process.env.DEV_ACCESS_TOKEN = 'test-dev-token-123';
 process.env.MONGODB_SHUTDOWN_WAIT_MS = '0';
 process.env.ESCROW_MATIC_PER_PAISA = '0.000004';
 process.env.MAX_ESCROW_MATIC = '10000';
+
+// Deterministic test-only secret for WIM bypass packet signing. It is long
+// enough to satisfy the minimum-length policy and is NEVER used as a fallback
+// in application code — it only exists here so tests can exercise signing.
+process.env.WIM_SIGNING_SECRET = 'test-wim-signing-secret-0123456789abcdef-0123456789abcdef';
 process.env.DRIVER_LOGIN_OTP = '1234';
 
 // Suppress noisy console.error output from the routes — they log
@@ -37,3 +42,56 @@ console.error = (...args) => {
   }
   originalError(...args);
 };
+
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+
+const { default: RedisMock } = await import('./mocks/redisMock.js');
+
+global.mockRedis = new RedisMock();
+
+beforeEach(() => {
+  global.mockRedis.clear();
+  vi.clearAllMocks();
+});
+
+afterAll(() => {
+  global.mockRedis.clear();
+});
+
+vi.mock('mongoose', () => ({
+  default: {
+    connection: { readyState: 0 },
+    disconnect: vi.fn().mockResolvedValue(undefined),
+  },
+  connection: { readyState: 0 },
+  disconnect: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('mongodb', () => ({
+  MongoClient: class {
+    connect() { return Promise.resolve(this); }
+    close() { return Promise.resolve(); }
+    db() {
+      return {
+        collection: () => ({
+          createIndex: vi.fn().mockResolvedValue('index_name'),
+        }),
+      };
+    }
+  },
+}));
+
+vi.mock('redis', () => {
+  return {
+    createClient: vi.fn(() => ({
+      connect: vi.fn().mockResolvedValue(undefined),
+      disconnect: vi.fn().mockResolvedValue(undefined),
+      set: vi.fn((...args) => global.mockRedis.set(...args)),
+      get: vi.fn((...args) => global.mockRedis.get(...args)),
+      del: vi.fn((...args) => global.mockRedis.del(...args)),
+      eval: vi.fn((...args) => global.mockRedis.eval(...args)),
+      on: vi.fn(),
+    })),
+  };
+});

@@ -11,6 +11,21 @@
  * Run with:  npm test -- test/unit/escrow.test.js
  */
 import { describe, it, expect, vi } from 'vitest'
+
+// Safe module mock: preserves all real ethers exports, overrides only classes needed for instantiation.
+vi.mock('ethers', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    ethers: {
+      ...actual.ethers,
+      Contract: vi.fn(function () { return global.__mockEthersContractInstance || {}; }),
+      JsonRpcProvider: vi.fn(),
+      Wallet: vi.fn(),
+    }
+  };
+});
+
 import { ethers } from 'ethers'
 import {
   getEscrowBookingId,
@@ -402,3 +417,215 @@ describe('escrow service — markEscrowBookingStarted (contract unconfigured)', 
     expect(result.bookingId).toBe(expected)
   })
 })
+
+describe('escrow service — setEscrowContractPaused (on-chain pause)', () => {
+  let pauseStub, unpauseStub, pausedStub, waitStub;
+
+  beforeEach(() => {
+    vi.resetModules();
+
+    // Set env vars so escrowContract is initialized on module load
+    process.env.POLYGON_RPC_URL = 'http://mock-rpc';
+    process.env.ESCROW_CONTRACT_ADDRESS = '0x1111111111111111111111111111111111111111';
+    process.env.RELAYER_WALLET_PRIVATE_KEY = '0x' + 'a'.repeat(64);
+
+    waitStub = vi.fn().mockResolvedValue({ status: 1, hash: '0xreceipt', blockNumber: 1 });
+    pauseStub = vi.fn().mockResolvedValue({ hash: '0xtx', wait: waitStub });
+    unpauseStub = vi.fn().mockResolvedValue({ hash: '0xtx', wait: waitStub });
+    pausedStub = vi.fn().mockResolvedValue(false);
+
+    global.__mockEthersContractInstance = {
+       pause: pauseStub,
+       unpause: unpauseStub,
+       paused: pausedStub,
+       runner: { provider: { getNetwork: async () => ({ chainId: 137 }) } }
+    };
+  });
+
+  afterEach(() => {
+    delete process.env.POLYGON_RPC_URL;
+    delete process.env.ESCROW_CONTRACT_ADDRESS;
+    delete process.env.RELAYER_WALLET_PRIVATE_KEY;
+    global.__mockEthersContractInstance = undefined;
+    vi.restoreAllMocks();
+  });
+
+  it('returns error when contract is uninitialized', async () => {
+    delete process.env.POLYGON_RPC_URL;
+    // Because of vi.resetModules(), deleting the env var BEFORE import guarantees
+    // escrowContract initializes to null in the fresh module evaluation.
+    const { setEscrowContractPaused } = await import('../../src/services/escrow.js');
+    const res = await setEscrowContractPaused(true);
+    expect(res.error).toContain('Escrow contract is not initialised');
+  });
+
+  it('skips transaction if already in requested state', async () => {
+    const { setEscrowContractPaused } = await import('../../src/services/escrow.js');
+    pausedStub.mockResolvedValue(true);
+    const res = await setEscrowContractPaused(true);
+    expect(pauseStub).not.toHaveBeenCalled();
+    expect(res).toEqual({ success: true, alreadyInState: true });
+  });
+
+  it('submits pause transaction and verifies state', async () => {
+    const { setEscrowContractPaused } = await import('../../src/services/escrow.js');
+    pausedStub.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const res = await setEscrowContractPaused(true);
+    expect(pauseStub).toHaveBeenCalled();
+    expect(waitStub).toHaveBeenCalledWith(1);
+    expect(res).toEqual({ success: true, txHash: '0xreceipt' });
+  });
+
+  it('submits unpause transaction and verifies state', async () => {
+    const { setEscrowContractPaused } = await import('../../src/services/escrow.js');
+    pausedStub.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const res = await setEscrowContractPaused(false);
+    expect(unpauseStub).toHaveBeenCalled();
+    expect(waitStub).toHaveBeenCalledWith(1);
+    expect(res).toEqual({ success: true, txHash: '0xreceipt' });
+  });
+
+  it('fails if tx submission fails', async () => {
+    const { setEscrowContractPaused } = await import('../../src/services/escrow.js');
+    pauseStub.mockRejectedValue(new Error('Network error'));
+    const res = await setEscrowContractPaused(true);
+    expect(res.error).toContain('Network error');
+  });
+
+  it('fails if tx receipt status is 0 (reverted)', async () => {
+    const { setEscrowContractPaused } = await import('../../src/services/escrow.js');
+    waitStub.mockResolvedValue({ status: 0 });
+    const res = await setEscrowContractPaused(true);
+    expect(res.error).toContain('reverted or not found');
+  });
+
+  it('fails if tx receipt is missing', async () => {
+    const { setEscrowContractPaused } = await import('../../src/services/escrow.js');
+    waitStub.mockResolvedValue(null);
+    const res = await setEscrowContractPaused(true);
+    expect(res.error).toContain('reverted or not found');
+  });
+
+  it('fails if paused() remains false after pause tx succeeds (regression)', async () => {
+    const { setEscrowContractPaused } = await import('../../src/services/escrow.js');
+    pausedStub.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+    const res = await setEscrowContractPaused(true);
+    expect(waitStub).toHaveBeenCalledWith(1);
+    expect(res.error).toContain('Transaction succeeded but contract paused() is still false');
+  });
+});
+
+describe('escrow service — submitEscrowRefund (configured contract)', () => {
+  const ORDER_ID = '#FF20260701';
+  let cancelBookingStub, waitStub, pausedFlag;
+
+  beforeEach(() => {
+    vi.resetModules();
+
+    process.env.POLYGON_RPC_URL = 'http://mock-rpc';
+    process.env.ESCROW_CONTRACT_ADDRESS = '0x1111111111111111111111111111111111111111';
+    process.env.RELAYER_WALLET_PRIVATE_KEY = '0x' + 'a'.repeat(64);
+
+    // The circuit breaker fails closed without Redis, so control it directly.
+    pausedFlag = false;
+    vi.doMock('../../src/services/escrowCircuitBreaker.js', () => ({
+      isEscrowPaused: async () => pausedFlag,
+      escrowPausedResult: (bookingId, extra = {}) => ({
+        txHash: null,
+        bookingId,
+        error: 'Escrow is paused',
+        code: 'ESCROW_PAUSED',
+        ...extra,
+      }),
+    }));
+
+    waitStub = vi.fn().mockResolvedValue({ status: 1, hash: '0xrefundreceipt', blockNumber: 7 });
+    cancelBookingStub = vi.fn().mockResolvedValue({ hash: '0xcancelhash', wait: waitStub });
+
+    // Mirrors the real ESCROW_ABI: the deployed TruxifyEscrow exposes
+    // cancelBooking but NO refundFunds, so ethers returns `undefined` for it.
+    global.__mockEthersContractInstance = {
+      cancelBooking: cancelBookingStub,
+      runner: { provider: { getNetwork: async () => ({ chainId: 137 }) } },
+    };
+  });
+
+  afterEach(() => {
+    delete process.env.POLYGON_RPC_URL;
+    delete process.env.ESCROW_CONTRACT_ADDRESS;
+    delete process.env.RELAYER_WALLET_PRIVATE_KEY;
+    global.__mockEthersContractInstance = undefined;
+    vi.doUnmock('../../src/services/escrowCircuitBreaker.js');
+    vi.restoreAllMocks();
+  });
+
+  it('submits exactly one cancelBooking tx and never calls a refundFunds method', async () => {
+    const { submitEscrowRefund, getEscrowBookingId } = await import('../../src/services/escrow.js');
+
+    const result = await submitEscrowRefund(ORDER_ID);
+
+    expect(cancelBookingStub).toHaveBeenCalledTimes(1);
+    expect(cancelBookingStub).toHaveBeenCalledWith(getEscrowBookingId(ORDER_ID));
+    expect(result.error).toBeUndefined();
+    expect(result.bookingId).toBe(getEscrowBookingId(ORDER_ID));
+    expect(typeof result.waitForConfirmation).toBe('function');
+  });
+
+  it('returns the hash of the cancelBooking tx so callers can persist refund_tx_hash', async () => {
+    const { submitEscrowRefund } = await import('../../src/services/escrow.js');
+
+    const result = await submitEscrowRefund(ORDER_ID);
+
+    expect(result.txHash).toBe('0xcancelhash');
+  });
+
+  it('waitForConfirmation waits on the same cancelBooking tx and returns its receipt', async () => {
+    const { submitEscrowRefund } = await import('../../src/services/escrow.js');
+
+    const result = await submitEscrowRefund(ORDER_ID);
+    const receipt = await result.waitForConfirmation();
+
+    expect(waitStub).toHaveBeenCalledWith(1);
+    expect(receipt.hash).toBe('0xrefundreceipt');
+  });
+
+  it('waitForConfirmation rejects when the refund tx reverted', async () => {
+    const { submitEscrowRefund } = await import('../../src/services/escrow.js');
+    waitStub.mockResolvedValue({ status: 0 });
+
+    const result = await submitEscrowRefund(ORDER_ID);
+
+    await expect(result.waitForConfirmation()).rejects.toThrow('reverted or was not found');
+  });
+
+  it('waitForConfirmation rejects when no receipt is returned', async () => {
+    const { submitEscrowRefund } = await import('../../src/services/escrow.js');
+    waitStub.mockResolvedValue(null);
+
+    const result = await submitEscrowRefund(ORDER_ID);
+
+    await expect(result.waitForConfirmation()).rejects.toThrow('reverted or was not found');
+  });
+
+  it('reports a failed cancelBooking submission as { txHash: null, error } instead of throwing', async () => {
+    const { submitEscrowRefund } = await import('../../src/services/escrow.js');
+    cancelBookingStub.mockRejectedValue(new Error('nonce too low'));
+
+    const result = await submitEscrowRefund(ORDER_ID);
+
+    expect(result.txHash).toBeNull();
+    expect(result.error).toContain('nonce too low');
+    expect(result.waitForConfirmation).toBeUndefined();
+  });
+
+  it('does not touch the chain while the escrow circuit breaker is open', async () => {
+    const { submitEscrowRefund } = await import('../../src/services/escrow.js');
+    pausedFlag = true;
+
+    const result = await submitEscrowRefund(ORDER_ID);
+
+    expect(cancelBookingStub).not.toHaveBeenCalled();
+    expect(result.txHash).toBeNull();
+    expect(result.code).toBe('ESCROW_PAUSED');
+  });
+});
