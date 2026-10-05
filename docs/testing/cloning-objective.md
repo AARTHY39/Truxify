@@ -6,7 +6,7 @@ Valid training explicitly enters train mode (including existing dropout), regard
 
 ## Focused native gate
 
-With Python3.12/CPU Torch2.8, NumPy1.26.4, pytest9.0.3/Ruff0.16.9 and the existing FastAPI/httpx route dependencies:
+With Python3.12/CPU Torch2.8, NumPy1.26.4, pytest9.0.3/pytest-asyncio1.4.0/Ruff0.16.9 and the existing FastAPI/httpx route dependencies:
 
 ```sh
 PYTHONPATH=backend/ml OMP_NUM_THREADS=1 python -m pytest -q backend/ml/tests/test_cloning_objective.py backend/ml/tests/test_reinforce_logit_contract.py
