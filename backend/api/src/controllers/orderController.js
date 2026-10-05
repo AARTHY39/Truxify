@@ -4,7 +4,7 @@ import { BidAcceptanceService, DomainError } from '../services/order/bidAcceptan
 import { OrderTimelineService } from '../services/order/orderTimelineService.js';
 import { OrderLifecycleService } from '../services/order/orderLifecycleService.js';
 import { OrderValidationService } from '../services/order/orderValidationService.js';
-import { buildDepositTx, recordDepositTx, submitEscrowRefund } from '../services/escrow.js';
+import { buildDepositTx, recordDepositTx, submitEscrowRefund as escrowRefund } from '../services/escrow.js';
 import { predictDemand } from '../services/ml.js';
 import { buildStraightLineGeometry, getRouteGeometry } from '../services/osrm.js';
 import logger from '../middleware/logger.js';
@@ -18,7 +18,7 @@ const bidAcceptanceService = new BidAcceptanceService({
   orderRepository,
   buildDepositTxFn: buildDepositTx,
   recordDepositTxFn: recordDepositTx,
-  escrowRefundFn: submitEscrowRefund,
+  escrowRefundFn: escrowRefund,
   logger,
 });
 
@@ -66,7 +66,15 @@ async function fetchLoadOffers(req, res, next, { isEnRoute, label }) {
       .order('created_at', { ascending: false })
       .range(from, to);
 
+<<<<<<< HEAD
     if (error) return next(new AppError(`Failed to fetch ${label}.`, 500, "INTERNAL_ERROR", { details: error.message }));
+=======
+    if (error) {
+      logger.error(`[orderController] Failed to fetch ${label}:`, error.message);
+      return next(new AppError(`Failed to fetch ${label}.`, 500, "INTERNAL_ERROR"));
+    }
+
+>>>>>>> upstream/main
     res.json(offers);
   } catch (err) {
     logger.error(`[orderController] Failed to fetch ${label}:`, err.message);
@@ -314,6 +322,11 @@ export const getLiveRouteGeometry = async (req, res, next) => {
     }
 
     if (!order.driver_id) {
+      // Number(null) is zero; reject absent pickup values before conversion
+      // while preserving real zero coordinates at the equator/prime meridian.
+      if (order.pickup_lat == null || order.pickup_lng == null) {
+        return next(new AppError('Order is missing pickup coordinates.', 500, "INTERNAL_ERROR"));
+      }
       const originLat = Number(order.pickup_lat);
       const originLng = Number(order.pickup_lng);
       const destLat = Number(order.drop_lat);
