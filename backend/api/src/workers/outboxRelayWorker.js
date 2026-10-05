@@ -53,6 +53,8 @@ async function relayOnce() {
         // structured outcome object regardless of emitSafe's boolean/Promise
         // result; the `delivered` gate below is what prevents marking a row
         // published when no adapter actually consumed the event.
+        const eventId = event.event_id || event.id;
+
         const baseEvent = new BaseEvent({
           eventType: event.event_type,
           payload: {
@@ -67,40 +69,53 @@ async function relayOnce() {
           adapters: ["kafka"],
         });
 
-        // Guard explanation:
-        // outcome.published       — EventBus successfully received the event
-        // !outcome.deduplicated   — Event was not a duplicate (avoid re-marking)
-        // outcome.adapterAttempted > 0 — At least one adapter (e.g. Kafka) received the event
-        // outcome.adapterFailures === 0 — No adapter reported a failure
+        const noAdapterFailure =
+          outcome?.adapterFailures === 0 &&
+          (!outcome.adapterErrors ||
+            (Array.isArray(outcome.adapterErrors) &&
+              outcome.adapterErrors.length === 0));
+
         const delivered =
+          Boolean(outcome) &&
           outcome.published === true &&
           !outcome.deduplicated &&
           outcome.adapterAttempted > 0 &&
-          outcome.adapterFailures === 0 &&
-          Array.isArray(outcome.adapterErrors) &&
-          outcome.adapterErrors.length === 0;
+          noAdapterFailure;
 
         if (delivered) {
-          await outboxService.markPublished(event.event_id);
+          await outboxService.markPublished(eventId);
           logger.info("[OutboxRelay] Published event:", {
-            eventId: event.event_id,
+            eventId,
             type: event.event_type,
           });
         } else {
-          const reason = outcome.deduplicated
-            ? "Event deduplicated by EventBus"
-            : outcome.adapterAttempted === 0
-              ? 'No event consumer/adapters handled the event'
-              : `Adapter failures: ${outcome.adapterErrors.join('; ')}`;
-          await outboxService.markFailed(event.event_id, _workerId, reason);
-          logger.error('[OutboxRelay] Event not delivered, marked failed:', { eventId: event.event_id, reason });
+          const reason = !outcome
+            ? "No outcome returned from EventBus"
+            : outcome.deduplicated
+              ? "Event deduplicated by EventBus"
+              : outcome.published !== true
+                ? "Publish outcome was unsuccessful"
+                : outcome.adapterAttempted === 0
+                  ? "No event consumer/adapters handled the event"
+                  : `Adapter failures: ${Array.isArray(outcome.adapterErrors) && outcome.adapterErrors.length > 0 ? outcome.adapterErrors.join("; ") : "Adapter reported failure"}`;
+          await outboxService.markFailed(eventId, _workerId, reason);
+          logger.error("[OutboxRelay] Event not delivered, marked failed:", {
+            eventId,
+            reason,
+          });
         }
       } catch (err) {
-        logger.error('[OutboxRelay] Failed to publish event:', { eventId: event.event_id, err: err.message });
+        logger.error("[OutboxRelay] Failed to publish event:", {
+          eventId: event.event_id || event.id,
+          err: err.message,
+        });
         try {
-          await outboxService.markFailed(event.event_id, _workerId, err.message);
+          await outboxService.markFailed(event.event_id || event.id, _workerId, err.message);
         } catch (markErr) {
-          logger.error('[OutboxRelay] Failed to mark event failed:', { eventId: event.event_id, err: markErr.message });
+          logger.error("[OutboxRelay] Failed to mark event failed:", {
+            eventId: event.event_id || event.id,
+            err: markErr.message,
+          });
         }
       }
     }
