@@ -53,33 +53,30 @@ class SimCLR(nn.Module):
         return h, z
     
     def contrastive_loss(self, z_i: torch.Tensor, z_j: torch.Tensor) -> torch.Tensor:
-        """Compute NT-Xent loss (contrastive loss)"""
+        """NT-Xent: exactly one positive among each anchor's non-self candidates."""
+        if (z_i.ndim != 2 or z_j.shape != z_i.shape or not z_i.size(0)
+                or not z_i.size(1)):
+            raise ValueError("paired embeddings require identical nonempty [batch, features] shapes")
+        if (not z_i.is_floating_point() or not z_j.is_floating_point()
+                or z_i.dtype != z_j.dtype or z_i.device != z_j.device):
+            raise ValueError("paired embeddings must share floating dtype and device")
+        if not torch.isfinite(z_i).all() or not torch.isfinite(z_j).all():
+            raise ValueError("paired embeddings must be finite")
+        if (isinstance(self.temperature, bool) or not isinstance(self.temperature, (int, float))
+                or not math.isfinite(self.temperature) or self.temperature <= 0):
+            raise ValueError("temperature must be a finite positive number")
+
         batch_size = z_i.size(0)
-        
-        # Concatenate representations
         z = torch.cat([z_i, z_j], dim=0)
-        
-        # Compute similarity matrix
-        sim = torch.matmul(z, z.T) / self.temperature
-        
-        # Create mask
-        mask = torch.eye(2 * batch_size, device=z.device)
-        sim = sim - mask * 1e9
-        
-        # Positive pairs: i -> i+batch, i+batch -> i
-        positives = torch.cat([
-            torch.diag(sim, batch_size),
-            torch.diag(sim, -batch_size)
-        ]).reshape(2 * batch_size, 1)
-        
-        # Negative pairs
-        negatives = sim[~mask.bool()].reshape(2 * batch_size, -1)
-        
-        # Log-sum-exp
-        logits = torch.cat([positives, negatives], dim=1)
-        loss = -F.log_softmax(logits, dim=1)[:, 0].mean()
-        
-        return loss
+        if z.dtype in (torch.float16, torch.bfloat16):
+            z = z.float()
+        similarities = torch.matmul(z, z.T) / self.temperature
+        if not torch.isfinite(similarities).all():
+            raise ValueError("contrastive logits must be representable finitely")
+        self_mask = torch.eye(2 * batch_size, device=z.device, dtype=torch.bool)
+        logits = similarities.masked_fill(self_mask, float('-inf'))
+        positive_indices = (torch.arange(2 * batch_size, device=z.device) + batch_size) % (2 * batch_size)
+        return F.cross_entropy(logits, positive_indices)
 
 class MoCo(nn.Module):
     """MoCo: Momentum Contrast for Unsupervised Visual Representation Learning"""
