@@ -51,6 +51,9 @@ follow normalized selection, changing legacy scores intentionally.
 The component has no training loop, degree-normalized graph convolution,
 learned node embedding or mounted serving caller beyond its tests. The historical
 embedding_dim field remains metadata and is validated. Original tests still pass.
+The Linux gate copies the three exact component/test source files into an isolated
+collection directory to avoid unrelated gnn.__init__ Torch/PyG startup; no source
+is rewritten or mocked. It verifies this component, not the complete GNN package.
 Six unchanged-main controls fail on casting, logit-shift and directed selection.
 
 Run from repository root:
