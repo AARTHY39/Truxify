@@ -458,16 +458,15 @@ describe('ShardManager', () => {
       delete process.env.SHARD_PASSWORD_WEST;
       delete process.env.SHARDING_ENABLED;
 
+      vi.resetModules();
       const logger = (await import('../../src/middleware/logger.js')).default;
       const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
-
-      vi.resetModules();
       await expect(
         import('../../src/services/sharding/ShardManager.js')
       ).resolves.toBeDefined();
 
       expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Missing required shard password env vars: SHARD_PASSWORD_NORTH, SHARD_PASSWORD_SOUTH, SHARD_PASSWORD_EAST, SHARD_PASSWORD_WEST')
+        expect.stringContaining('missing shard password env vars: SHARD_PASSWORD_NORTH, SHARD_PASSWORD_SOUTH, SHARD_PASSWORD_EAST, SHARD_PASSWORD_WEST')
       );
       warnSpy.mockRestore();
     });
@@ -484,7 +483,7 @@ describe('ShardManager', () => {
       await expect(
         import('../../src/services/sharding/ShardManager.js')
       ).rejects.toThrow(
-        'Missing required shard password env vars: SHARD_PASSWORD_NORTH, SHARD_PASSWORD_SOUTH, SHARD_PASSWORD_EAST, SHARD_PASSWORD_WEST'
+        'missing shard password env vars: SHARD_PASSWORD_NORTH, SHARD_PASSWORD_SOUTH, SHARD_PASSWORD_EAST, SHARD_PASSWORD_WEST'
       );
     });
   });
