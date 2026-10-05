@@ -458,7 +458,7 @@ describe('routeWithFailover edge cases', () => {
   });
 });
 
-describe('osrm - retryDelayMs backoff clamp', () => {
+describe('osrm - retryDelayMs backoff clamp (#11014)', () => {
   const { retryDelayMs, MAX_RETRY_DELAY_MS } = __testing;
 
   it('doubles the delay per attempt', () => {
@@ -468,8 +468,8 @@ describe('osrm - retryDelayMs backoff clamp', () => {
   });
 
   it('clamps the delay at MAX_RETRY_DELAY_MS', () => {
+    expect(MAX_RETRY_DELAY_MS).toBe(10_000);
     expect(retryDelayMs(500, 10)).toBe(MAX_RETRY_DELAY_MS);
     expect(retryDelayMs(10000, 3)).toBe(MAX_RETRY_DELAY_MS);
-    expect(MAX_RETRY_DELAY_MS).toBeLessThanOrEqual(10_000);
   });
 });
