@@ -140,12 +140,27 @@ class LogisticsFoundationModel(nn.Module):
         x = self.position_encoding(x)
         x = self.dropout(x)
         
+        # MLM admits a token mask and broadcasts internally, keeping the public
+        # token-mask contract compatible with the separate attention fix.
+        layer_mask = attention_mask
+        if task == 'mlm' and attention_mask is not None:
+            if attention_mask.shape != input_ids.shape or attention_mask.ndim != 2:
+                raise ValueError("MLM token mask must match input IDs")
+            if attention_mask.device != input_ids.device or not torch.all(
+                (attention_mask == 0) | (attention_mask == 1)
+            ) or not attention_mask.bool().any(dim=1).all():
+                raise ValueError("MLM token mask must be binary, on-device and nonempty per row")
+            layer_mask = attention_mask[:, None, None, :]
+
         # Transformer layers
         for layer in self.layers:
-            x = layer(x, attention_mask)
+            x = layer(x, layer_mask)
         
         x = self.ln_final(x)
         
+        if task == 'mlm':
+            return {'output': self.generation_head(x), 'hidden': x}
+
         # Pooling (mean pooling over sequence)
         if attention_mask is not None:
             x = (x * attention_mask.unsqueeze(-1)).sum(dim=1) / attention_mask.sum(dim=1, keepdim=True)
