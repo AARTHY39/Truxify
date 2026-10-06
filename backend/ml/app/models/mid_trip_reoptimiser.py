@@ -343,18 +343,19 @@ def find_mid_trip_loads(
             else:
                 deadline_dt = deadline_dt.astimezone(timezone.utc)
 
-            best_option = None
-            estimated_pickup_time = None
-            for option in insertion_options:
-                candidate_pickup_time = now + timedelta(minutes=option[3])
-                if candidate_pickup_time <= deadline_dt and (
-                    best_option is None or option < best_option
-                ):
-                    best_option = option
-                    estimated_pickup_time = candidate_pickup_time
-
-            if best_option is None:
+            options = list(insertion_options)
+            if not options:
                 continue
+
+            # Deadline feasibility uses the conservative arrival: the pickup
+            # appended after every remaining stop. Reordering queued deliveries
+            # to squeeze a pickup in before its deadline is not allowed.
+            append_arrival = now + timedelta(minutes=options[-1][3])
+            if append_arrival > deadline_dt:
+                continue
+
+            best_option = min(options)
+            estimated_pickup_time = now + timedelta(minutes=best_option[3])
 
             detour_km, detour_minutes, pickup_route_distance, pickup_route_minutes = best_option
 
