@@ -34,6 +34,12 @@ mock_execution_module.run_inference = _run_inference_stub
 mock_execution_module.run_training_job = _run_inference_stub
 sys.modules["app.execution"] = mock_execution_module
 
+sys.modules.pop("routes.eta_routes", None)
+import routes as _routes_pkg
+if hasattr(_routes_pkg, "eta_routes"):
+    # `from routes import eta_routes` would otherwise return the cached package
+    # attribute without re-importing under the stubs above.
+    delattr(_routes_pkg, "eta_routes")
 from routes import eta_routes
 
 # The stubs above exist only so `routes.eta_routes` imports its heavy
