@@ -1074,6 +1074,145 @@ router.post('/:id/ratings', authenticate, userLimiter, requirePolicy('order:subm
     return res.status(500).json({ error: 'Internal Server Error.' });
   }
 });
+// ============================================================================
+// 18a. SUBMIT BID FOR A LOAD (DRIVER) — POST /api/orders/:id/bids
+// ============================================================================
+/**
+ * @openapi
+ * /api/orders/{id}/bids:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Submit a driver bid for a load
+ *     description: Submits a driver bid amount (in paisa) for an available order/load.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/SubmitBidRequest'
+ *     responses:
+ *       201:
+ *         description: Bid submitted successfully
+ *       400:
+ *         description: Invalid request or bid parameters
+ *       404:
+ *         description: Order not found
+ */
+router.post('/:id/bids', authenticate, userLimiter, requireRole(['driver']), bidLimiter, validateParams(paramIdSchema), validateBody(submitBidSchema), async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const driverId = req.user.id;
+    const { amount } = req.body;
+
+    // 1. Verify order/load exists and is available
+    const { data: order, error: orderError } = await supabaseAdmin
+      .from('orders')
+      .select('id, display_id, status, customer_id')
+      .eq('display_id', orderId)
+      .maybeSingle();
+
+    if (orderError || !order) {
+      return res.status(404).json({ error: 'Order or load not found' });
+    }
+
+    if (order.status !== 'available' && order.status !== 'pending') {
+      return res.status(400).json({ error: 'This load is no longer accepting bids.' });
+    }
+
+    // 2. Insert into load_bids table
+    const { data: bid, error: insertError } = await supabaseAdmin
+      .from('load_bids')
+      .insert([{
+        order_display_id: orderId,
+        driver_id: driverId,
+        bid_amount: amount,
+        status: 'pending',
+        created_at: new Date().toISOString(),
+      }])
+      .select()
+      .single();
+
+    if (insertError) {
+      logger.error({ err: insertError, orderId, driverId }, 'Failed to insert driver bid');
+      return res.status(400).json({ error: 'Failed to submit bid', details: insertError.message });
+    }
+
+    return res.status(201).json({ bid });
+  } catch (err) {
+    if (err instanceof DomainError) {
+      return res.status(err.status).json(err.payload);
+    }
+    logger.error('[submit-bid] Exception:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ============================================================================
+// 18b. VIEW BIDS FOR AN ORDER (CUSTOMER) — GET /api/orders/:id/bids
+// ============================================================================
+/**
+ * @openapi
+ * /api/orders/{id}/bids:
+ *   get:
+ *     tags: [Orders]
+ *     summary: View all bids for an order
+ *     description: Returns all driver bids submitted for a customer's order.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: List of bids retrieved successfully
+ */
+router.get('/:id/bids', authenticate, userLimiter, requireRole(['customer']), validateParams(paramIdSchema), async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const customerId = req.user.id;
+
+    // Verify order ownership
+    const { data: order, error: orderError } = await supabaseAdmin
+      .from('orders')
+      .select('id, display_id, customer_id')
+      .eq('display_id', orderId)
+      .maybeSingle();
+
+    if (orderError || !order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    if (order.customer_id !== customerId) {
+      return res.status(403).json({ error: 'Unauthorized to view bids for this order' });
+    }
+
+    const { data: bids, error: bidsError } = await supabaseAdmin
+      .from('load_bids')
+      .select('*')
+      .eq('order_display_id', orderId)
+      .order('created_at', { ascending: false });
+
+    if (bidsError) {
+      return res.status(400).json({ error: 'Failed to fetch bids' });
+    }
+
+    return res.json({ bids: bids || [] });
+  } catch (err) {
+    logger.error('[get-bids] Exception:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
 router.post(
   '/:id/bids',
   authenticate,
@@ -1105,4 +1244,81 @@ router.post(
   }
 );
 
+// ============================================================================
+// 18c. ACCEPT A BID (CUSTOMER) — POST /api/orders/:id/bids/:bidId/accept
+// ============================================================================
+/**
+ * @openapi
+ * /api/orders/{id}/bids/{bidId}/accept:
+ *   post:
+ *     tags: [Orders]
+ *     summary: Accept a driver bid
+ *     description: Accepts a specific driver bid for an order, initiating the escrow funding process.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: path
+ *         name: bidId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Bid accepted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AcceptBidResponse'
+ */
+router.post('/:id/bids/:bidId/accept', authenticate, userLimiter, requireRole(['customer']), validateParams(acceptBidParamsSchema), async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const { bidId } = req.params;
+    const customerId = req.user.id;
+
+    // 1. Verify order ownership
+    const { data: order, error: orderError } = await supabaseAdmin
+      .from('orders')
+      .select('id, display_id, customer_id, status')
+      .eq('display_id', orderId)
+      .maybeSingle();
+
+    if (orderError || !order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    if (order.customer_id !== customerId) {
+      return res.status(403).json({ error: 'Unauthorized to accept bids for this order' });
+    }
+
+    // 2. Update bid status and order state using database transaction / update
+    const { data: updatedBid, error: updateError } = await supabaseAdmin
+      .from('load_bids')
+      .update({ status: 'accepted', updated_at: new Date().toISOString() })
+      .eq('id', bidId)
+      .eq('order_display_id', orderId)
+      .select()
+      .single();
+
+    if (updateError || !updatedBid) {
+      return res.status(400).json({ error: 'Failed to accept bid' });
+    }
+
+    return res.json({
+      message: 'Bid accepted successfully. Please fund escrow to finalize assignment.',
+      order,
+      bid: updatedBid,
+    });
+  } catch (err) {
+    logger.error('[accept-bid] Exception:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+export default router;
 export default router;
