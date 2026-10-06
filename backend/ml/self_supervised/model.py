@@ -226,8 +226,20 @@ class MaskedAutoencoder(nn.Module):
         
         logger.info(f"✅ Masked Autoencoder initialized with mask ratio {mask_ratio}")
     
+    def _validate_input(self, x: torch.Tensor):
+        """Validate the admitted reconstruction dataset without model mutation."""
+        if (isinstance(self.mask_ratio, bool) or not isinstance(self.mask_ratio, (int, float))
+                or not math.isfinite(self.mask_ratio) or not 0 <= self.mask_ratio <= 1):
+            raise ValueError("mask_ratio must be finite and in [0, 1]")
+        if x.ndim != 3 or not x.shape[0] or not x.shape[1] or x.shape[2] != self.input_dim:
+            raise ValueError("MAE data requires nonempty [batch, tokens, input_dim] shape")
+        if (x.dtype != self.mask_token.dtype or x.device != self.mask_token.device
+                or not x.is_floating_point() or not torch.isfinite(x).all()):
+            raise ValueError("MAE data must be finite floating values matching model dtype/device")
+
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass with masking"""
+        self._validate_input(x)
         batch_size, seq_len, dim = x.shape
         
         # Create mask
@@ -246,8 +258,16 @@ class MaskedAutoencoder(nn.Module):
         reconstructed = self.decoder(encoded)
         
         # Compute loss only on masked tokens
-        loss = F.mse_loss(reconstructed[mask_indices[:, 0], mask_indices[:, 1]], 
-                         x[mask_indices[:, 0], mask_indices[:, 1]])
+        if mask.any():
+            predictions, targets = reconstructed[mask], x[mask]
+            if predictions.dtype in (torch.float16, torch.bfloat16):
+                predictions, targets = predictions.float(), targets.float()
+            loss = F.mse_loss(predictions, targets)
+        else:
+            # Empty observations have a zero objective with a valid zero-gradient graph.
+            loss = reconstructed.reshape(-1)[0] * 0
+        if not torch.isfinite(loss):
+            raise ValueError("masked reconstruction objective must be finite")
         
         return reconstructed, loss, mask
     
@@ -368,8 +388,15 @@ class SSLPreTrainer:
     
     def pretrain_mae(self, data: torch.Tensor, epochs: int = 50, batch_size: int = 32) -> Dict:
         """Pre-train using Masked Autoencoder"""
+        for name, value in (('epochs', epochs), ('batch_size', batch_size)):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        data = data.to(self.device)
+        self.model._validate_input(data)
         losses = []
-        
+        observed_batches = 0
+        skipped_batches = 0
+
         for epoch in range(epochs):
             epoch_loss = 0
             num_batches = 0
@@ -381,14 +408,18 @@ class SSLPreTrainer:
                 batch = data_shuffled[i:i+batch_size]
                 
                 # Forward pass
-                _, loss, _ = self.model(batch)
+                _, loss, mask = self.model(batch)
                 
                 # Backward pass
                 self.optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                self.optimizer.step()
-                
+                if mask.any():
+                    observed_batches += 1
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0, error_if_nonfinite=True)
+                    self.optimizer.step()
+                else:
+                    skipped_batches += 1
+
                 epoch_loss += loss.item()
                 num_batches += 1
             
@@ -401,7 +432,9 @@ class SSLPreTrainer:
         return {
             'losses': losses,
             'final_loss': losses[-1] if losses else None,
-            'method': 'mae'
+            'method': 'mae',
+            'observed_batches': observed_batches,
+            'skipped_batches': skipped_batches
         }
     
     def save(self, path: str = "models/ssl_model.pth"):
