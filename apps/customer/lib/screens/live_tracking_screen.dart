@@ -1100,15 +1100,16 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
                       tileProvider: CancellableNetworkTileProvider(),
                       userAgentPackageName: 'com.truxify.customer',
                     ),
-                    PolylineLayer(
-                      polylines: [
-                        Polyline(
-                          points: _routePoints,
-                          strokeWidth: 4,
-                          color: TruxifyColors.accentDark,
-                        ),
-                      ],
-                    ),
+                    if (_routePoints.isNotEmpty)
+                      PolylineLayer(
+                        polylines: [
+                          Polyline(
+                            points: _routePoints,
+                            strokeWidth: 4,
+                            color: TruxifyColors.accentDark,
+                          ),
+                        ],
+                      ),
                     AnimatedBuilder(
                       animation: _movementController,
                       builder: (context, _) {
