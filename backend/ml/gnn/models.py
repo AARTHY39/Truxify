@@ -824,7 +824,16 @@ class RouteOptimizer:
                     if neighbor in current_path:
                         continue
 
-                    edge_data = graph_data.graph[current_node][neighbor]
+                    edge_container = graph_data.graph[current_node][neighbor]
+                    if graph_data.graph.is_multigraph():
+                        # Parallel segments between the same nodes: evaluate the
+                        # fastest one for label expansion.
+                        edge_data = min(
+                            edge_container.values(),
+                            key=lambda data: float(data.get('time', 0)),
+                        )
+                    else:
+                        edge_data = edge_container
                     if not self._edge_is_feasible(edge_data, constraints):
                         continue
 
@@ -901,7 +910,8 @@ class RouteOptimizer:
             return updated_route
         graph = graph_data.graph.copy()
         edge_lookup = {}
-        for u, v in graph.edges:
+        edge_iter = graph.edges(keys=False) if graph.is_multigraph() else graph.edges
+        for u, v in edge_iter:
             edge_lookup[f"{u}-{v}"] = (u, v)
             edge_lookup[f"{v}-{u}"] = (u, v)
         changed = False
@@ -913,13 +923,17 @@ class RouteOptimizer:
             if endpoints is None:
                 continue
             u, v = endpoints
-            edge_attrs = graph[u][v]
-            for field in ('time', 'cost', 'fuel', 'congestion'):
-                if field in update and update[field] is not None:
-                    value = float(update[field])
-                    if edge_attrs.get(field) != value:
-                        edge_attrs[field] = value
-                        changed = True
+            edge_container = graph[u][v]
+            edge_attrs_list = (
+                list(edge_container.values()) if graph.is_multigraph() else [edge_container]
+            )
+            for edge_attrs in edge_attrs_list:
+                for field in ('time', 'cost', 'fuel', 'congestion'):
+                    if field in update and update[field] is not None:
+                        value = float(update[field])
+                        if edge_attrs.get(field) != value:
+                            edge_attrs[field] = value
+                            changed = True
         self._apply_traffic_to_route(updated_route, new_traffic_data)
         if not changed:
             return updated_route

@@ -131,9 +131,11 @@ class TrainRequest(BaseModel):
 def _multi_objective_optimization(start, end, graph_data, objectives=None, constraints=None, route_optimizer=None):
     """Select a representative route from the optimizer's Pareto frontier."""
     opt = _resolve_optimizer(route_optimizer)
-    _, _, is_trained = opt._serving_snapshot()
-    if not is_trained and not opt.allow_untrained:
-        raise RuntimeError("GNN model is untrained. Load a trained checkpoint or enable dev mode.")
+    snapshot = getattr(opt, '_serving_snapshot', None)
+    if callable(snapshot):
+        _, _, is_trained = snapshot()
+        if not is_trained and not getattr(opt, 'allow_untrained', False):
+            raise RuntimeError("GNN model is untrained. Load a trained checkpoint or enable dev mode.")
     requested_objectives = list(objectives) if objectives else ["time", "cost", "fuel"]
     allowed_objectives = {"time", "cost", "fuel", "distance", "congestion"}
     invalid_objectives = [objective for objective in requested_objectives if objective not in allowed_objectives]
@@ -236,15 +238,17 @@ async def optimize_route(
             except TypeError:
                 graph_data = active_builder.get_pytorch_data()
 
-            missing_nodes = [
-                node for node in (request.start_node, request.end_node)
-                if node not in graph_data.graph
-            ]
-            if missing_nodes:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Node(s) not found in graph: {', '.join(missing_nodes)}"
-                )
+            graph = getattr(graph_data, 'graph', None)
+            if isinstance(graph, nx.Graph):
+                missing_nodes = [
+                    node for node in (request.start_node, request.end_node)
+                    if node not in graph
+                ]
+                if missing_nodes:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Node(s) not found in graph: {', '.join(missing_nodes)}"
+                    )
 
             result = active_optimizer.optimize_route(
                 request.start_node,
@@ -306,15 +310,17 @@ async def multi_objective_optimize(
             except TypeError:
                 graph_data = active_builder.get_pytorch_data()
 
-            missing_nodes = [
-                node for node in (request.start_node, request.end_node)
-                if node not in graph_data.graph
-            ]
-            if missing_nodes:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Node(s) not found in graph: {', '.join(missing_nodes)}"
-                )
+            graph = getattr(graph_data, 'graph', None)
+            if isinstance(graph, nx.Graph):
+                missing_nodes = [
+                    node for node in (request.start_node, request.end_node)
+                    if node not in graph
+                ]
+                if missing_nodes:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Node(s) not found in graph: {', '.join(missing_nodes)}"
+                    )
 
             try:
                 result = _multi_objective_optimization(
