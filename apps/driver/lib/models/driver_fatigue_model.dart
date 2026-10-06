@@ -27,3 +27,23 @@ class FatigueSession {
     required this.ocularData,
   });
 }
+
+/// Live vision-pipeline metrics from the fatigue detection service (the
+/// monitor screen's model; distinct from the older FatigueSession report).
+class FatigueMetrics {
+  final double eyeClosurePercentage; // 0.0 - 1.0
+  final double blinkRatePerMinute;
+  final int headNodsDetected;
+  final bool isMicroSleepDetected;
+  final String fatigueLevel; // "Awake", "Drowsy", "Critical"
+  final DateTime timestamp;
+
+  const FatigueMetrics({
+    required this.eyeClosurePercentage,
+    required this.blinkRatePerMinute,
+    required this.headNodsDetected,
+    required this.isMicroSleepDetected,
+    required this.fatigueLevel,
+    required this.timestamp,
+  });
+}
