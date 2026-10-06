@@ -318,9 +318,9 @@ describe('TrafficService - Complete Enterprise & Edge Case Test Suite (Issues #1
       expect(multiplier).toBe(1.0);
     });
 
-    it('reaches MIN_SURGE_MULTIPLIER (1.2) precisely at morning window edge start (07:00 UTC)', async () => {
-      vi.setSystemTime(new Date('2026-09-19T07:00:00Z'));
-      const multiplier = await getLiveTrafficMultiplier(28.61, 77.23);
+    it('reaches MIN_SURGE_MULTIPLIER (1.2) precisely at morning window edge start (07:00 IST)', () => {
+      // 01:30 UTC is 07:00 IST, the start of the morning rush window.
+      const multiplier = trafficService.getRushHourMultiplier(new Date('2026-09-19T01:30:00Z'));
       expect(multiplier).toBeCloseTo(1.20, 2);
     });
 
@@ -330,15 +330,15 @@ describe('TrafficService - Complete Enterprise & Edge Case Test Suite (Issues #1
       expect(multiplier).toBe(1.0);
     });
 
-    it('peaks during morning rush window center (08:30 UTC)', async () => {
-      vi.setSystemTime(new Date('2026-09-19T08:30:00Z'));
-      const multiplier = await getLiveTrafficMultiplier(28.61, 77.23);
+    it('peaks during morning rush window center (08:30 IST)', () => {
+      // 03:00 UTC is 08:30 IST, the center of the morning rush window.
+      const multiplier = trafficService.getRushHourMultiplier(new Date('2026-09-19T03:00:00Z'));
       expect(multiplier).toBeCloseTo(2.33, 2);
     });
 
-    it('reaches MIN_SURGE_MULTIPLIER (1.2) precisely at evening window edge start (16:00 UTC)', async () => {
-      vi.setSystemTime(new Date('2026-09-19T16:00:00Z'));
-      const multiplier = await getLiveTrafficMultiplier(28.61, 77.23);
+    it('reaches MIN_SURGE_MULTIPLIER (1.2) precisely at evening window edge start (16:00 IST)', () => {
+      // 10:30 UTC is 16:00 IST, the start of the evening rush window.
+      const multiplier = trafficService.getRushHourMultiplier(new Date('2026-09-19T10:30:00Z'));
       expect(multiplier).toBeCloseTo(1.20, 2);
     });
 
@@ -348,9 +348,9 @@ describe('TrafficService - Complete Enterprise & Edge Case Test Suite (Issues #1
       expect(multiplier).toBe(1.0);
     });
 
-    it('peaks during evening rush window center (17:30 UTC)', async () => {
-      vi.setSystemTime(new Date('2026-09-19T17:30:00Z'));
-      const multiplier = await getLiveTrafficMultiplier(28.61, 77.23);
+    it('peaks during evening rush window center (17:30 IST)', () => {
+      // 12:00 UTC is 17:30 IST, the center of the evening rush window.
+      const multiplier = trafficService.getRushHourMultiplier(new Date('2026-09-19T12:00:00Z'));
       expect(multiplier).toBeCloseTo(2.33, 2);
     });
 

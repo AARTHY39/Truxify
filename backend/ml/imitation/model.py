@@ -6,6 +6,7 @@ from typing import Dict, List, Tuple, Any, Optional
 import logging
 from collections import deque
 import random
+from numbers import Integral
 
 logger = logging.getLogger(__name__)
 
@@ -369,44 +370,41 @@ class ImitationLearningModel:
         batch_size: int = 32
     ) -> Dict:
         """Train behavioral cloning"""
+        for name, value in (('epochs', epochs), ('batch_size', batch_size)):
+            if isinstance(value, bool) or not isinstance(value, Integral) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        parameter = next(self.behavioral_cloning.parameters())
+        # Own and admit the entire dataset before shuffle, mode or Adam changes.
+        states = torch.as_tensor(expert_states, dtype=parameter.dtype, device=parameter.device).detach().clone()
+        actions = torch.as_tensor(expert_actions, dtype=parameter.dtype, device=parameter.device).detach().clone()
+        if states.ndim != 2 or not len(states) or states.shape[1] != self.state_dim:
+            raise ValueError("states must be nonempty rows with state_dim features")
+        if actions.shape != (len(states), self.action_dim):
+            raise ValueError("actions must have one action_dim vector per state row")
+        if not torch.isfinite(states).all() or not torch.isfinite(actions).all():
+            raise ValueError("expert demonstrations must be finite")
+
         losses = []
-        
+        self.behavioral_cloning.train()
         for epoch in range(epochs):
-            # Shuffle data
-            indices = np.random.permutation(len(expert_states))
-            states_shuffled = expert_states[indices]
-            actions_shuffled = expert_actions[indices]
-            
-            total_loss = 0
-            num_batches = 0
-            
-            for i in range(0, len(expert_states), batch_size):
-                batch_states = torch.tensor(states_shuffled[i:i+batch_size], dtype=torch.float32)
-                batch_actions = torch.tensor(actions_shuffled[i:i+batch_size], dtype=torch.float32)
-                
-                # Forward pass
-                pred_actions = self.behavioral_cloning(batch_states)
-                loss = F.mse_loss(pred_actions, batch_actions)
-                
-                # Backward pass
+            indices = np.random.permutation(len(states))
+            total_loss = 0.0
+            for start in range(0, len(states), batch_size):
+                rows = torch.as_tensor(indices[start:start + batch_size], device=parameter.device)
+                prediction = self.behavioral_cloning(states[rows])
+                loss = F.mse_loss(prediction, actions[rows])
+                if not torch.isfinite(loss):
+                    raise ValueError("cloning objective cannot be represented finitely")
                 self.bc_optimizer.zero_grad()
                 loss.backward()
+                # Infinite max_norm preserves finite gradients without clipping bias.
+                torch.nn.utils.clip_grad_norm_(self.behavioral_cloning.parameters(),
+                                               float('inf'), error_if_nonfinite=True)
                 self.bc_optimizer.step()
-                
-                total_loss += loss.item()
-                num_batches += 1
-            
-            avg_loss = total_loss / num_batches
-            losses.append(avg_loss)
-            
-            if (epoch + 1) % 20 == 0:
-                logger.info(f"BC Epoch {epoch+1}/{epochs}: Loss={avg_loss:.4f}")
-        
-        return {
-            'losses': losses,
-            'final_loss': losses[-1]
-        }
-    
+                total_loss += loss.item() * len(rows)
+            losses.append(total_loss / len(states))
+        return {'losses': losses, 'final_loss': losses[-1]}
+
     def train_irl(
         self,
         expert_states: np.ndarray,

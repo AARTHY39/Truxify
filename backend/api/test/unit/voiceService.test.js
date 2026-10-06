@@ -102,13 +102,15 @@ describe('voiceService', () => {
 
     it('returns order when bookingId is a display ID matching driver_id', async () => {
       const mockOrder = { id: 'order-1', order_display_id: 'DISP-001', status: 'picked_up' };
-      const eqFn = vi.fn(() => ({
-        or: vi.fn(() => ({
-          maybeSingle: vi.fn(() => Promise.resolve({ data: mockOrder, error: null })),
+      const orFn = vi.fn(() => ({
+        order: vi.fn(() => ({
+          limit: vi.fn(() => ({
+            maybeSingle: vi.fn(() => Promise.resolve({ data: mockOrder, error: null })),
+          })),
         })),
       }));
       const selectFn = vi.fn(() => ({
-        eq: eqFn,
+        or: orFn,
       }));
       mockSupabaseFrom.mockReturnValue({ select: selectFn });
 

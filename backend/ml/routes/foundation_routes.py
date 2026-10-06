@@ -108,7 +108,8 @@ async def pretrain_model(file: Optional[UploadFile] = None):
         val_data = processor.create_pretraining_data(data[8000:])
         
         # Train
-        results = trainer.train(train_data, val_data)
+        from foundation.pretraining import MaskedTokenTrainer
+        results = MaskedTokenTrainer(model, config).train(train_data, val_data)
         
         return {
             'success': True,
@@ -116,6 +117,7 @@ async def pretrain_model(file: Optional[UploadFile] = None):
                 'final_train_loss': results['final_train_loss'],
                 'final_val_loss': results['final_val_loss'],
                 'train_losses': results['train_losses'],
+                'supervised_tokens_per_epoch': results['supervised_tokens_per_epoch'],
                 'val_losses': results['val_losses']
             },
             'timestamp': datetime.now().isoformat()

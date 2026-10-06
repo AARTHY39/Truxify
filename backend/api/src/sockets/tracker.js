@@ -154,7 +154,6 @@ let telemetryMonitorInterval = null;
 let driverStateSweepInterval = null;
 let wsUpgradeLimitsCleanupInterval = null;
 let messageRateTrackerCleanupInterval = null;
-const HEARTBEAT_INTERVAL_MS = parseInt(process.env.WS_HEARTBEAT_INTERVAL_MS, 10) || 180000;
 const HEARTBEAT_INTERVAL_MS = parseInt(process.env.WS_HEARTBEAT_INTERVAL_MS, 10) || 30000; // 30 seconds
 
 const WS_UPGRADE_RATE_LIMIT = 5;
@@ -706,8 +705,22 @@ export async function handleTrackingMessage(ws, message, req) {
               user_id: ws.user?.id ?? ws.driverId,
             }));
             logger.info({ event: 'WS_AUTHENTICATED', socketId: ws.socketId }, 'New WebSocket connection authenticated');
+
+            // Replay messages that arrived while authentication was in flight.
+            const queue = ws.pendingAuthQueue || [];
+            ws.pendingAuthQueue = [];
+            ws.isAuthenticating = false;
+            for (const item of queue) {
+              if (ws.readyState === 1 && ws.authenticated) {
+                await handleTrackingMessage(ws, item.message, item.req);
+              }
+            }
+          } else {
+            ws.pendingAuthQueue = [];
+            ws.isAuthenticating = false;
           }
-        } finally {
+        } catch (err) {
+          ws.pendingAuthQueue = [];
           ws.isAuthenticating = false;
           throw err;
         }
@@ -1500,18 +1513,69 @@ async function handleUnsubscribe(ws, data) {
           }
         }
 
-        if (ws.pendingAuthQueue && ws.pendingAuthQueue.length > 0) {
-          const queue = ws.pendingAuthQueue;
-          ws.pendingAuthQueue = [];
-          for (const queued of queue) {
-            handleTrackingMessage(ws, queued.message, queued.req);
+        displayIdToLocationChannelKeys.delete(targetId);
+      }
+    }
+
+    logger.info({ targetId }, 'Client unsubscribed from updates');
+    ws.send(JSON.stringify({ status: 'unsubscribed', target: targetId }));
+  }
+}
+
+async function removeClientFromAllSubscriptions(ws) {
+  trackingSubscriptions.forEach((clients, key) => {
+    if (clients.has(ws)) {
+      clients.delete(ws);
+      logger.info({ key }, 'Removed socket subscription due to disconnect');
+    }
+    if (clients.size === 0) {
+      trackingSubscriptions.delete(key);
+      // Clean up cached Supabase Realtime channels associated with this
+      // subscription key via the reverse index so channels do not leak.
+      const channelKeys = displayIdToLocationChannelKeys.get(key);
+      if (channelKeys) {
+        for (const uuidKey of channelKeys) {
+          if (locationChannels.has(uuidKey)) {
+            const channel = locationChannels.get(uuidKey);
+            if (supabase) {
+              supabase.removeChannel(channel);
+            }
+            locationChannels.delete(uuidKey);
+            logger.info({ uuidKey }, 'Removed Supabase Realtime channel on last subscriber disconnect');
           }
         }
-        return;
-      } else {
-        ws.send(JSON.stringify({ error: 'Unauthorized: First message must be an "auth" event with a token', code: 4001 }));
-        ws.close(4001, 'Unauthorized: First message must be an auth event');
-        return;
+        displayIdToLocationChannelKeys.delete(key);
+      }
+    }
+  });
+
+  // Clean up the in-memory circuit breaker state so disconnected
+  // drivers do not cause unbounded memory growth. This runs regardless
+  // of Redis availability since consecutiveDropCount is always in-memory.
+  if (ws.driverId) {
+    consecutiveDropCount.delete(ws.driverId);
+  }
+
+  // Drop this socket's message rate-limit state on disconnect instead of
+  // relying on GC (the previous WeakMap approach), so memory stays bounded.
+  if (ws.socketId) {
+    messageRateTracker.delete(ws.socketId);
+  }
+
+  if (redisClient) {
+    const subscriberId = ws.user?.id || ws.driverId;
+    if (subscriberId) {
+      let hasOtherSockets = false;
+      if (wsServer && wsServer.clients) {
+        for (const client of wsServer.clients) {
+          if (client !== ws && client.readyState === 1) {
+            const clientUserId = client.user?.id || client.driverId;
+            if (clientUserId === subscriberId) {
+              hasOtherSockets = true;
+              break;
+            }
+          }
+        }
       }
       if (!hasOtherSockets) {
         try {
@@ -1569,3 +1633,35 @@ async function restoreSubscriptions(ws) {
     logger.error({ err }, 'Subscription restoration error');
   }
 }
+
+export const __testing = {
+  resetTrackingSubscriptions() {
+    trackingSubscriptions.clear();
+  },
+  setOrderRepository(repo) {
+    _orderRepository = repo;
+  },
+  async restoreSubscriptions(ws) {
+    await restoreSubscriptions(ws);
+  },
+  getTrackingSubscriptions() {
+    return trackingSubscriptions;
+  },
+  setTrackingSubscriptions(map) {
+    trackingSubscriptions = map;
+  },
+  setLocationEventBus(bus) {
+    locationEventBus = bus;
+  },
+  getLocationEventBus() {
+    return locationEventBus;
+  },
+  createLocationEventHandler,
+  getLocationEventBusMetrics() {
+    return locationEventBus ? locationEventBus.getMetrics() : null;
+  },
+  flushTelemetryBuffer() {
+    return telemetryBuffer._test.flush();
+  },
+  removeClientFromAllSubscriptions,
+};
