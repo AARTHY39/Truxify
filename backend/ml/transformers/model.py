@@ -219,6 +219,9 @@ class TrafficForecastTransformer(nn.Module):
         
         logger.info(f"✅ Traffic Forecast Transformer initialized")
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.transformer(x)
+
 class PriceForecastTransformer(nn.Module):
     """Transformer for price forecasting"""
     
@@ -245,6 +248,9 @@ class PriceForecastTransformer(nn.Module):
         )
         
         logger.info(f"✅ Price Forecast Transformer initialized")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.transformer(x)
 
 @dataclass(frozen=True)
 class _TrainerGeneration:
