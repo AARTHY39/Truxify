@@ -305,6 +305,38 @@ class MultiTaskTrainer:
             'task_losses': {k: v.item() for k, v in losses.items()}
         }
     
+    def _validate_dataset(self, data, targets, *, name):
+        """Check the complete named dataset before any training mutation."""
+        if not isinstance(data, torch.Tensor) or data.ndim != 2:
+            raise ValueError(f"{name} data must be a two-dimensional tensor")
+        expected_features = self.model.shared_encoder.encoder[0].in_features
+        if data.shape[0] == 0 or data.shape[1] != expected_features:
+            raise ValueError(f"{name} data requires nonempty rows and {expected_features} features")
+        if not data.is_floating_point() or not torch.isfinite(data).all():
+            raise ValueError(f"{name} data must contain finite floating values")
+        if data.dtype != next(self.model.parameters()).dtype:
+            raise ValueError(f"{name} data dtype must match the model parameters")
+        task_names = tuple(self.model.tasks)
+        if not task_names or not isinstance(targets, dict) or set(targets) != set(task_names):
+            raise ValueError(f"{name} targets must exactly match model tasks {task_names}")
+        for task_name in task_names:
+            config = self.model.tasks[task_name]
+            target = targets[task_name]
+            if not isinstance(target, torch.Tensor):
+                raise ValueError(f"{name} target {task_name} must be a tensor")
+            width = config.get('output_dim', 1)
+            if config.get('type', 'regression') == 'classification':
+                if target.shape != (len(data),) or target.dtype != torch.long:
+                    raise ValueError(f"{name} target {task_name} requires one int64 class index per row")
+                if ((target < 0) | (target >= width)).any():
+                    raise ValueError(f"{name} target {task_name} class indices must be in [0, {width})")
+            elif (target.shape != (len(data), width) or not target.is_floating_point()
+                  or target.dtype != data.dtype):
+                raise ValueError(f"{name} target {task_name} requires floating shape ({len(data)}, {width}) and data dtype")
+            if not torch.isfinite(target).all():
+                raise ValueError(f"{name} target {task_name} must contain finite values")
+        return task_names
+
     def train(
         self,
         train_data: torch.Tensor,
@@ -318,8 +350,18 @@ class MultiTaskTrainer:
         losses = []
         val_losses = []
         
-        # Create dataloader
-        dataset = TensorDataset(train_data, *[train_targets[t] for t in train_targets.keys()])
+        # Admission is complete before any batch changes model or optimizer state.
+        for label, value in (('epochs', epochs), ('batch_size', batch_size)):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{label} must be a positive integer")
+        task_names = self._validate_dataset(train_data, train_targets, name='training')
+        if (val_data is None) != (val_targets is None):
+            raise ValueError("validation data and targets must be supplied together")
+        if val_data is not None:
+            self._validate_dataset(val_data, val_targets, name='validation')
+
+        # Use the same names for dataset serialization and batch reconstruction.
+        dataset = TensorDataset(train_data, *[train_targets[t] for t in task_names])
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         
         for epoch in range(epochs):
@@ -329,7 +371,7 @@ class MultiTaskTrainer:
             for batch in dataloader:
                 x = batch[0]
                 targets = {}
-                for i, task_name in enumerate(self.model.tasks.keys()):
+                for i, task_name in enumerate(task_names):
                     targets[task_name] = batch[i + 1]
                 
                 step_result = self.train_step(x, targets)
