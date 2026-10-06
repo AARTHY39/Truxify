@@ -309,8 +309,8 @@ if (!process.env.SHARD_NORTH_HOST || !process.env.SHARD_SOUTH_HOST ||
   logger.warn('WARNING: Shard hosts not fully configured. Using localhost defaults.')
 }
 
-if (!process.env.SHARD_PASSWORD_NORTH || !process.env.SHARD_PASSWORD_SOUTH ||
-  !process.env.SHARD_PASSWORD_EAST || !process.env.SHARD_PASSWORD_WEST) {
+if (!process.env.SHARD_PASSWORD && (!process.env.SHARD_PASSWORD_NORTH || !process.env.SHARD_PASSWORD_SOUTH ||
+  !process.env.SHARD_PASSWORD_EAST || !process.env.SHARD_PASSWORD_WEST)) {
   logger.warn('WARNING: Shard passwords not fully configured. Ensure all SHARD_PASSWORD_* env vars are set.')
 }
 
