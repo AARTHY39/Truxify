@@ -433,12 +433,9 @@ async function handlePaymentReleased(payload) {
   });
 
   await releaseOrder({ order, txHash: verification.txHash, now });
+  // releaseOrder already reconciled the wallet ledger; reconciling again here
+  // issued a duplicate credit write on every fresh release (#12155).
   await creditDriverWallet(order, payload.txHash);
-  
-  const reconciliation = await reconcileWalletLedger(order, payload.txHash, 'confirmed');
-  if (reconciliation.error) {
-    throw reconciliation.error;
-  }
 
   logger.info(`[Webhook] Order ${order.order_display_id} marked escrow released (tx: ${payload.txHash})`);
 }
