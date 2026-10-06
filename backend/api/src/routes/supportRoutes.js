@@ -138,34 +138,6 @@ function normalizeRequiredText(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function parsePositiveInteger(value, fallback, field) {
-  if (value === undefined) return { value: fallback };
-  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
-    return { error: `${field} must be a positive integer` };
-  }
-
-  const parsed = Number.parseInt(value, 10);
-  if (parsed < 1) {
-    return { error: `${field} must be a positive integer` };
-  }
-
-  return { value: parsed };
-}
-
-function parseIntegerQuery(value, fallback, field, options = {}) {
-  if (value === undefined) return { value: fallback };
-  if (typeof value !== 'string' || !/^-?\d+$/.test(value)) {
-    return { error: `${field} must be an integer` };
-  }
-
-  const parsed = Number.parseInt(value, 10);
-  if (options.min !== undefined && parsed < options.min) {
-    return { error: `${field} must be at least ${options.min}` };
-  }
-
-  return { value: parsed };
-}
-
 function parseUuidQuery(value, field) {
   if (value === undefined) return { value: undefined };
   if (typeof value !== 'string' || !UUID_REGEX.test(value)) {
@@ -967,23 +939,25 @@ router.get('/tickets/:id/comments', authenticate, userLimiter, requirePolicy('ti
       return res.status(404).json({ error: 'Support ticket not found.' });
     }
 
-    const parsedLimit = parsePositiveInteger(req.query.limit, 100, 'limit');
-    if (parsedLimit.error) {
-      return res.status(400).json({ error: parsedLimit.error });
+    const parsedLimit = req.query.limit !== undefined ? Number(req.query.limit) : 100;
+    const parsedOffset = req.query.offset !== undefined ? Number(req.query.offset) : 0;
+
+    if (!Number.isFinite(parsedLimit) || !Number.isInteger(parsedLimit) || parsedLimit <= 0) {
+      return res.status(400).json({ error: 'limit must be a positive integer' });
     }
 
-    const limit = Math.min(100, parsedLimit.value);
-    const parsedOffset = parseIntegerQuery(req.query.offset, 0, 'offset', { min: 0 });
-    if (parsedOffset.error) {
-      return res.status(400).json({ error: parsedOffset.error });
+    if (!Number.isFinite(parsedOffset) || !Number.isInteger(parsedOffset) || parsedOffset < 0) {
+      return res.status(400).json({ error: 'offset must be a non-negative integer' });
     }
-    const offset = parsedOffset.value;
+
+    const limit = Math.min(100, parsedLimit);
+    const offset = parsedOffset;
 
     const { data: comments, error: commentsError } = await userDb(req)
       .from('support_ticket_comments')
       .select('id, ticket_id, user_id, user_name, message, created_at')
       .eq('ticket_id', ticketId)
-      .order('created_at', { ascending: true })
+      .order('created_at', { ascending: isAscending })
       .range(offset, offset + limit - 1);
 
     if (commentsError) {
