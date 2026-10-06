@@ -746,5 +746,6 @@ export function createStore(prefix) {
 export const __testing = {
   DeferredRedisStore,
   isRedisReady,
+  sentryAlertHandler,
 };
 
