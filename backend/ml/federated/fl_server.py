@@ -46,14 +46,65 @@ def robust_aggregate(layer_weights, global_weights=None, clip_norm=1.0):
     clip_norm : float
         Maximum L2 norm of the aggregated delta.
     """
-    stacked = np.stack([np.asarray(w, dtype=float) for w in layer_weights], axis=0)
-    median = np.median(stacked, axis=0)
+    if (isinstance(clip_norm, (bool, np.bool_)) or not np.isscalar(clip_norm)
+            or np.asarray(clip_norm).dtype.kind not in 'fiu'):
+        raise ValueError("clip_norm must be a finite nonnegative numeric scalar")
+    try:
+        radius = float(clip_norm)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise ValueError("clip_norm must be a finite nonnegative numeric scalar") from exc
+    if not np.isfinite(radius) or radius < 0:
+        raise ValueError("clip_norm must be finite and nonnegative")
 
-    if global_weights is not None:
-        delta = median - np.asarray(global_weights, dtype=float)
-        norm = float(np.linalg.norm(delta))
-        if norm > clip_norm > 0:
-            delta = delta * (clip_norm / (norm + 1e-8))
-        median = np.asarray(global_weights, dtype=float) + delta
+    def numeric_layer(value):
+        array = np.asarray(value)
+        if array.dtype.kind not in 'fiu' or not array.size:
+            raise ValueError("layers must be nonempty real numeric arrays")
+        with np.errstate(over='ignore', invalid='ignore'):
+            array = array.astype(np.float64)
+        if not np.isfinite(array).all():
+            raise ValueError("layers must contain finite representable values")
+        return array
 
+    layers = [numeric_layer(w) for w in layer_weights]
+    if not layers or any(w.shape != layers[0].shape for w in layers):
+        raise ValueError("client layers must have identical nonempty shapes")
+    baseline = None if global_weights is None else numeric_layer(global_weights)
+    if baseline is not None and baseline.shape != layers[0].shape:
+        raise ValueError("global layer must exactly match client layer shape")
+
+    ordered = np.sort(np.stack(layers, axis=0), axis=0)
+    middle = len(layers) // 2
+    if len(layers) % 2:
+        median = ordered[middle].copy()
+    else:
+        lower, upper = ordered[middle - 1], ordered[middle]
+        same_sign = np.signbit(lower) == np.signbit(upper)
+        large = same_sign & ((np.abs(lower) > np.finfo(float).max / 2)
+                             | (np.abs(upper) > np.finfo(float).max / 2))
+        median = np.empty_like(lower)
+        # Safe sums retain subnormal rounding; bounded same-sign differences
+        # avoid overflow only where the ordinary midpoint sum is unsafe.
+        median[~large] = (lower[~large] + upper[~large]) / 2
+        median[large] = lower[large] + (upper[large] - lower[large]) / 2
+
+    if baseline is not None and radius > 0:
+        with np.errstate(over='ignore', invalid='ignore'):
+            delta = median - baseline
+        if np.isfinite(delta).all():
+            # Scale the difference itself: a large unchanged coordinate must
+            # not erase a much smaller update in a different coordinate.
+            scale = float(np.max(np.abs(delta)))
+            direction = delta / scale if scale > 0 else delta
+        else:
+            scale = max(float(np.max(np.abs(median))), float(np.max(np.abs(baseline))))
+            # Only overflowing subtraction needs endpoint scaling; some
+            # direction coordinate is then larger than1, so the norm is safe.
+            direction = median / scale - baseline / scale
+        if scale > 0:
+            length = float(np.linalg.norm(direction))
+            if length > 0 and scale > radius / length:
+                median = baseline + direction * (radius / length)
+    if not np.isfinite(median).all():
+        raise ValueError("aggregate must be representable finitely")
     return median

@@ -176,6 +176,50 @@ class PINNTrainer:
         
         logger.info(f"✅ PINN Trainer initialized on {self.device}")
     
+    def _admit(self, x_data, y_data, x_phys, physics_kwargs):
+        parameter = next(self.model.parameters())
+        values = []
+        for name, tensor in (("observations", x_data), ("targets", y_data),
+                             ("collocation points", x_phys)):
+            if not isinstance(tensor, torch.Tensor) or not tensor.is_floating_point():
+                raise ValueError(f"{name} must be a finite floating tensor")
+            tensor = tensor.to(device=parameter.device, dtype=parameter.dtype)
+            if not torch.isfinite(tensor).all():
+                raise ValueError(f"{name} must be finite in model dtype")
+            values.append(tensor)
+        x_data, y_data, x_phys = values
+        for points in (x_data, x_phys):
+            if points.ndim != 2 or not len(points) or points.shape[1] != self.model.input_dim:
+                raise ValueError("points must be nonempty rows with input_dim coordinates")
+        if self.model.output_dim != 1:
+            raise ValueError("physics training requires one scalar model output")
+        if y_data.ndim == 1:
+            y_data = y_data[:, None]
+        if y_data.shape != (len(x_data), 1):
+            raise ValueError("targets must contain exactly one scalar per observation")
+        kind = self.physics_loss.physics_type
+        if kind not in ("poisson", "diffusion", "advection", "burger"):
+            raise ValueError("unknown physics type")
+        if kind != "poisson" and x_phys.shape[1] != 2:
+            raise ValueError("evolution physics requires space/time coordinates")
+        kwargs = dict(physics_kwargs)
+        key = {"diffusion": "D", "advection": "v", "burger": "nu"}.get(kind)
+        if key is not None and key in kwargs:
+            coefficient = torch.as_tensor(kwargs[key], device=parameter.device, dtype=parameter.dtype)
+            if coefficient.ndim != 0 or not torch.isfinite(coefficient):
+                raise ValueError("physics coefficient must be a finite scalar")
+            kwargs[key] = coefficient
+        if kind == "poisson" and "f" in kwargs:
+            forcing = torch.as_tensor(kwargs["f"], device=parameter.device, dtype=parameter.dtype)
+            if forcing.shape == (len(x_phys),):
+                forcing = forcing[:, None]
+            if (forcing.ndim != 0 and forcing.shape != (len(x_phys), 1)) or not torch.isfinite(forcing).all():
+                raise ValueError("forcing must be finite scalar or paired collocation rows")
+            kwargs["f"] = forcing
+        if not np.isfinite(self.data_weight) or not np.isfinite(self.physics_weight):
+            raise ValueError("loss weights must be finite")
+        return x_data, y_data, x_phys, kwargs
+
     def train_step(
         self,
         x_data: torch.Tensor,
@@ -184,13 +228,11 @@ class PINNTrainer:
         **physics_kwargs
     ) -> Dict:
         """Single training step"""
+        x_data, y_data, x_phys, physics_kwargs = self._admit(
+            x_data, y_data, x_phys, physics_kwargs)
         self.model.train()
         self.optimizer.zero_grad()
-        
-        # Move to device
-        x_data = x_data.to(self.device)
-        y_data = y_data.to(self.device)
-        x_phys = x_phys.to(self.device).detach().clone().requires_grad_(True)
+        x_phys = x_phys.detach().clone().requires_grad_(True)
         
         # Data loss
         y_pred = self.model(x_data)
@@ -203,9 +245,11 @@ class PINNTrainer:
         # Combined loss
         loss = self.data_weight * data_loss + self.physics_weight * phys_loss
         
+        if not torch.isfinite(loss):
+            raise ValueError("PINN objective must be finite")
         # Backward pass
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0, error_if_nonfinite=True)
         self.optimizer.step()
         
         return {
@@ -225,54 +269,36 @@ class PINNTrainer:
         **physics_kwargs
     ) -> Dict:
         """Full training loop"""
-        losses = []
-        data_losses = []
-        phys_losses = []
-        
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 1
+               for value in (epochs, batch_size)):
+            raise ValueError("epochs and batch_size must be positive integers")
+        # Validate the entire dataset before any batch can advance Adam.
+        x_data, y_data, x_phys, physics_kwargs = self._admit(
+            x_data, y_data, x_phys, physics_kwargs)
+        losses, data_losses, phys_losses = [], [], []
         for epoch in range(epochs):
-            # Shuffle data
-            indices = torch.randperm(x_data.size(0))
-            x_data_shuffled = x_data[indices]
-            y_data_shuffled = y_data[indices]
-            
-            epoch_loss = 0
-            epoch_data_loss = 0
-            epoch_phys_loss = 0
-            num_batches = 0
-            
-            for i in range(0, x_data.size(0), batch_size):
-                batch_x = x_data_shuffled[i:i+batch_size]
-                batch_y = y_data_shuffled[i:i+batch_size]
-                
-                # Random physics points
-                phys_indices = torch.randperm(x_phys.size(0))[:batch_size]
-                batch_x_phys = x_phys[phys_indices]
-                
-                # Training step
-                result = self.train_step(batch_x, batch_y, batch_x_phys, **physics_kwargs)
-                
-                epoch_loss += result['loss']
-                epoch_data_loss += result['data_loss']
-                epoch_phys_loss += result['physics_loss']
-                num_batches += 1
-            
-            avg_loss = epoch_loss / num_batches
-            avg_data_loss = epoch_data_loss / num_batches
-            avg_phys_loss = epoch_phys_loss / num_batches
-            
+            indices = torch.randperm(len(x_data), device=x_data.device)
+            epoch_loss = epoch_data_loss = epoch_phys_loss = 0.0
+            for start in range(0, len(x_data), batch_size):
+                data_indices = indices[start:start + batch_size]
+                phys_indices = torch.randperm(len(x_phys), device=x_phys.device)[:batch_size]
+                kwargs = dict(physics_kwargs)
+                if "f" in kwargs and self.physics_loss.physics_type == "poisson" and kwargs["f"].ndim:
+                    kwargs["f"] = kwargs["f"][phys_indices]
+                result = self.train_step(x_data[data_indices], y_data[data_indices],
+                                         x_phys[phys_indices], **kwargs)
+                rows = len(data_indices)
+                epoch_loss += result["loss"] * rows
+                epoch_data_loss += result["data_loss"] * rows
+                epoch_phys_loss += result["physics_loss"] * rows
+            avg_loss = epoch_loss / len(x_data)
             losses.append(avg_loss)
-            data_losses.append(avg_data_loss)
-            phys_losses.append(avg_phys_loss)
-            
-            # Update scheduler
+            data_losses.append(epoch_data_loss / len(x_data))
+            phys_losses.append(epoch_phys_loss / len(x_data))
             self.scheduler.step(avg_loss)
-            
             if (epoch + 1) % 100 == 0:
-                logger.info(
-                    f"Epoch {epoch+1}/{epochs}: Loss={avg_loss:.4f}, "
-                    f"Data={avg_data_loss:.4f}, Physics={avg_phys_loss:.4f}"
-                )
-        
+                logger.info("PINN Epoch %s/%s: Loss=%.4f", epoch + 1, epochs, avg_loss)
+
         return {
             'losses': losses,
             'data_losses': data_losses,
