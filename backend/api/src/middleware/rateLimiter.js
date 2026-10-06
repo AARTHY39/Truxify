@@ -748,4 +748,3 @@ export const __testing = {
   isRedisReady,
 };
 
-export default slidingWindowRateLimiter;

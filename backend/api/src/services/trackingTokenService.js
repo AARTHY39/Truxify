@@ -9,74 +9,6 @@ const PUBLIC_TRACKING_LOCATION_FRESHNESS_SECONDS = parseInt(process.env.PUBLIC_T
 // backend/api/src/services/trackingTokenService.js
 export class TrackingTokenService {
   constructor({ supabase, supabaseAdmin, logger: injectedLogger }) {
-    // If supabase is not explicitly provided or if this is used in a public context,
-    // ensure we have a robust fallback or use supabaseAdmin for public methods.
-    this._supabase = supabase || supabaseAdmin;
-    this._supabaseAdmin = supabaseAdmin || supabase;
-    this.logger = injectedLogger;
-  }
-
-  async validateToken(rawToken) {
-    // Hashes token and queries tracking_tokens using service-role client
-    const { data: token, error } = await this._supabase
-      .from('tracking_tokens')
-      .select('id, order_display_id, expires_at, revoked, revoked_at')
-      .eq('token_hash', this._hashToken(rawToken))
-      .maybeSingle();
-
-    if (error || !token) {
-      return { valid: false, reason: 'not_found' };
-    }
-
-    if (token.revoked || (token.expires_at && new Date(token.expires_at) < new Date())) {
-      return { valid: false, reason: token.revoked ? 'revoked' : 'expired' };
-    }
-
-    return { valid: true, token };
-  }
-
-  async validateAndGetPublicTrackingData(rawToken) {
-    const validation = await this.validateToken(rawToken);
-    if (!validation.valid) {
-      return validation;
-    }
-
-    const orderDisplayId = validation.token.order_display_id;
-
-    // Fetch order, timeline, and driver location using service-role client
-    const [orderRes, timelineRes, locationRes] = await Promise.all([
-      this._supabase.from('orders').select('*').eq('display_id', orderDisplayId).maybeSingle(),
-      this._supabase.from('order_timeline').select('*').eq('order_display_id', orderDisplayId),
-      this._supabaseAdmin.from('driver_locations').select('*').eq('order_display_id', orderDisplayId).maybeSingle(),
-    ]);
-
-    if (!orderRes.data) {
-      return { valid: false, reason: 'order_not_found' };
-    }
-
-    return {
-      valid: true,
-      data: {
-        order: orderRes.data,
-        timeline: timelineRes.data || [],
-        driverLocation: locationRes.data || null,
-      },
-    };
-  }
-
-  _hashToken(token) {
-    // Token hashing implementation
-    return token; // (Placeholder for actual cryptographic hash logic used in project)
-  }
-}
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function isValidUUID(uuid) {
-  return typeof uuid === 'string' && UUID_REGEX.test(uuid);
-}
-
-export class TrackingTokenService {
-  constructor({ supabase, supabaseAdmin, logger: injectedLogger }) {
     this._supabase = supabase;
     this._supabaseAdmin = supabaseAdmin;
     this._logger = injectedLogger || logger;
@@ -455,5 +387,33 @@ module.exports = {
   issueTrackingToken,
   validateTrackingToken,
   updateLocationWithToken,
+  async validateAndGetPublicTrackingData(rawToken) {
+    const validation = await this.validateToken(rawToken);
+    if (!validation.valid) {
+      return validation;
+    }
+
+    const orderDisplayId = validation.token.order_display_id;
+
+    // Fetch order, timeline, and driver location using service-role client
+    const [orderRes, timelineRes, locationRes] = await Promise.all([
+      this._supabase.from('orders').select('*').eq('display_id', orderDisplayId).maybeSingle(),
+      this._supabase.from('order_timeline').select('*').eq('order_display_id', orderDisplayId),
+      this._supabaseAdmin.from('driver_locations').select('*').eq('order_display_id', orderDisplayId).maybeSingle(),
+    ]);
+
+    if (!orderRes.data) {
+      return { valid: false, reason: 'order_not_found' };
+    }
+
+    return {
+      valid: true,
+      data: {
+        order: orderRes.data,
+        timeline: timelineRes.data || [],
+        driverLocation: locationRes.data || null,
+      },
+    };
+  }
 };
 */
