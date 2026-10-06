@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { supabaseAdmin } from '../config/db.js';
 import logger from '../middleware/logger.js';
+import { evaluateBridgeFormulaCompliance } from './weighStationService.js';
 import {
   getWimSigningSecret,
   getWimCredentialTtlMs,
@@ -64,11 +65,11 @@ export function canonicalStringify(value) {
 
 /**
  * Validates truck criteria for weigh station bypass.
- * @param {Object} truckData - { safetyScore, axleWeight, maxWeightLimit }.
+ * @param {Object} truckData - Trusted safety, weight, capacity, and optional axle records.
  * @returns {boolean} True if eligible for bypass.
  */
-export function evaluateBypassEligibility(truckData) {
-  const { safetyScore, axleWeight, maxWeightLimit } = truckData;
+export function evaluateBypassEligibility(truckData = {}) {
+  const { safetyScore, axleWeight, maxWeightLimit, axles, hasOverweightPermit } = truckData;
 
   if (typeof safetyScore !== 'number' || !Number.isFinite(safetyScore)) {
     return false;
@@ -80,11 +81,29 @@ export function evaluateBypassEligibility(truckData) {
     return false;
   }
 
-  if (safetyScore < MIN_SAFETY_SCORE) {
-    return false;
-  }
-  if (axleWeight > maxWeightLimit) {
-    return false;
+    // Reject non-numeric, non-finite and non-positive weights. `typeof` alone
+    // is not enough: a caller that coerces its database value with Number()
+    // turns a NULL column into the number 0 before we ever see it, and 0 would
+    // otherwise look like the safest possible load.
+    if (typeof axleWeight !== 'number' || !Number.isFinite(axleWeight) || axleWeight <= 0) {
+        return false;
+    }
+    if (typeof maxWeightLimit !== 'number' || !Number.isFinite(maxWeightLimit) || maxWeightLimit <= 0) {
+        return false;
+    }
+    if (axleWeight > maxWeightLimit) {
+        return false;
+    }
+
+  if (Array.isArray(axles) && axles.length >= 2) {
+    const compliance = evaluateBridgeFormulaCompliance({
+      axles,
+      declaredGvwLbs: axleWeight,
+      hasOverweightPermit: Boolean(hasOverweightPermit),
+    });
+    if (!compliance.compliant) {
+      return false;
+    }
   }
 
   return true;
@@ -397,7 +416,6 @@ export async function consumeWimCredential(credentialId) {
     logger.error({ err: error }, '[WIM] Failed to consume bypass credential');
     throw new Error('Failed to consume bypass credential.');
   }
-
   if (!data) {
     return null;
   }
