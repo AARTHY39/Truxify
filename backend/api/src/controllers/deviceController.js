@@ -62,7 +62,7 @@ export async function registerDeviceToken(req, res, next) {
   try {
     const userId = req.user?.id;
     // Support both 'fcmToken' (original) and 'fcm_token' (new snippet)
-    const { fcmToken, fcm_token, platform, device_type, device_model, metadata, deviceId } = req.body;
+    const { fcmToken, fcm_token, platform, device_type, metadata, deviceId } = req.body;
     
     const finalToken = fcmToken || fcm_token;
 
@@ -126,8 +126,6 @@ export async function registerDeviceToken(req, res, next) {
       p_prev_user_id: previousUserId ?? null,
       p_device_id:    deviceId ?? null,
       p_last_seen:    new Date().toISOString(),
-      // Pass additional fields if the RPC supports them, otherwise they are ignored
-      p_device_model: device_model ?? null, 
     });
 
     if (rpcError) {
