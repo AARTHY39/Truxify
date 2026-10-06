@@ -939,8 +939,27 @@ router.get('/tickets/:id/comments', authenticate, userLimiter, requirePolicy('ti
       return res.status(404).json({ error: 'Support ticket not found.' });
     }
 
-    const parsedLimit = req.query.limit !== undefined ? Number(req.query.limit) : 100;
-    const parsedOffset = req.query.offset !== undefined ? Number(req.query.offset) : 0;
+    const limitQuery = req.query.limit;
+    const offsetQuery = req.query.offset;
+
+    // Reject empty or whitespace-only strings before conversion 
+    if (typeof limitQuery === 'string' && limitQuery.trim() === '') {
+      return res.status(400).json({ error: 'limit cannot be empty' });
+    }
+    if (typeof offsetQuery === 'string' && offsetQuery.trim() === '') {
+      return res.status(400).json({ error: 'offset cannot be empty' });
+    }
+
+    const parsedLimit = limitQuery !== undefined ? Number(limitQuery) : 100;
+    const parsedOffset = offsetQuery !== undefined ? Number(offsetQuery) : 0;
+
+    if (!Number.isFinite(parsedLimit) || !Number.isInteger(parsedLimit) || parsedLimit <= 0) {
+      return res.status(400).json({ error: 'limit must be a positive integer' });
+    }
+
+    if (!Number.isFinite(parsedOffset) || !Number.isInteger(parsedOffset) || parsedOffset < 0) {
+      return res.status(400).json({ error: 'offset must be a non-negative integer' });
+    }
 
     if (!Number.isFinite(parsedLimit) || !Number.isInteger(parsedLimit) || parsedLimit <= 0) {
       return res.status(400).json({ error: 'limit must be a positive integer' });
