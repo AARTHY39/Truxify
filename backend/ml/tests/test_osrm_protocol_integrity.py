@@ -39,6 +39,7 @@ def server():
 def endpoint(server, monkeypatch):
     handler, address = server
     handler.requests_seen.clear()
+    handler.payload = {}
     monkeypatch.setattr(client, "OSRM_BASE_URL", address)
     return handler
 
