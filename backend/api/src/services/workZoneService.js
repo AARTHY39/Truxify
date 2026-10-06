@@ -327,13 +327,19 @@ export class WorkZoneService {
    */
   _buildCacheKey(normBounds, filters = {}) {
     const { minLat, maxLat, minLng, maxLng } = normBounds;
-    const types = Array.isArray(filters.types ?? filters.type)
-      ? (filters.types ?? filters.type).map(t => String(t).toLowerCase()).sort().join(',')
-      : (filters.types ?? filters.type ? String(filters.types ?? filters.type).toLowerCase() : 'all');
-    const status = filters.status ? (Array.isArray(filters.status) ? filters.status.sort().join(',') : String(filters.status)) : 'any';
-    const severity = filters.severity ? (Array.isArray(filters.severity) ? filters.severity.sort().join(',') : String(filters.severity)) : 'any';
-
-    return `workzone:${minLat.toFixed(3)}_${maxLat.toFixed(3)}_${minLng.toFixed(3)}_${maxLng.toFixed(3)}:t=${types}:s=${status}:v=${severity}`;
+    const normalizeList = value => value
+      ? (Array.isArray(value) ? value : [value]).map(item => String(item).toLowerCase()).sort()
+      : null;
+    const minDelay = Number(filters.minDelayMinutes);
+    // Include every result-changing input without rounding bounds or mutating filters.
+    // Version the key so old Redis entries cannot supply aliased results.
+    return `workzone:v2:${JSON.stringify({
+      bounds: [minLat, maxLat, minLng, maxLng],
+      types: normalizeList(filters.types ?? filters.type),
+      status: normalizeList(filters.status),
+      severity: normalizeList(filters.severity),
+      minDelay: Number.isFinite(minDelay) ? minDelay : null,
+    })}`;
   }
 
   /**
