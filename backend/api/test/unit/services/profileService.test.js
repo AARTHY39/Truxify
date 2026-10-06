@@ -257,7 +257,8 @@ describe('ProfileService', () => {
 
     it('computes stats from orders table when cache misses', async () => {
       mockEq.mockResolvedValueOnce({
-        data: [{ status: 'delivered', total_amount: 5000 }, { status: 'delivered', total_amount: 3000 }],
+        data: null,
+        count: 2,
         error: null,
       });
 
@@ -271,8 +272,8 @@ describe('ProfileService', () => {
       expect(profileCacheRef.setCachedCustomerStats).toHaveBeenCalled();
     });
 
-    it('handles empty orders list gracefully', async () => {
-      mockEq.mockResolvedValueOnce({ data: null, error: null });
+    it('handles an empty order count gracefully', async () => {
+      mockEq.mockResolvedValueOnce({ data: null, count: 0, error: null });
 
       const result = await getCustomerStats('c1');
       expect(result).toEqual({

@@ -71,16 +71,17 @@ export async function getCustomerStats(userId) {
   // customer_stats was never populated by any write path, so stats are
   // computed from the customer's orders at request time. Reads go through
   // the service-role client when available (RLS would hide other orders).
-  const { data: orders, error } = await client
+  // Count at the database boundary: Data API row caps must not truncate totals.
+  const { count, error } = await client
     .from('orders')
-    .select('status, total_amount')
+    .select('id', { count: 'exact', head: true })
     .eq('customer_id', userId);
 
   if (error) throw error;
 
   const stats = {
     user_id: userId,
-    total_orders: (orders || []).length,
+    total_orders: count ?? 0,
     // No broker-baseline data exists on orders to compute savings / CO2.
     total_saved: 0,
     co2_reduced_kg: 0,
