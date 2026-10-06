@@ -31,9 +31,13 @@ class GraphNetworkBuilder(_BaseGraphNetworkBuilder):
 class RouteOptimizer(_BaseRouteOptimizer):
     """Reject negative route scores instead of masking them with a clamp."""
 
-    def _calculate_score(self, embeddings, current, neighbor, objectives, graph_data, node_map=None):
+    def _calculate_score(self, embeddings, current, neighbor, objectives, graph_data, node_map=None, edge_data=None):
         score = 0.0
-        edge_data = graph_data.graph[current][neighbor]
+        edge_data = (
+            edge_data
+            if edge_data is not None
+            else graph_data.graph[current][neighbor]
+        )
         weights = {
             "time": 1.0,
             "cost": 0.5,

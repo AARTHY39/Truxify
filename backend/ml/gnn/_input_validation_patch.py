@@ -82,6 +82,16 @@ class GraphNetworkBuilder(_BaseGraphNetworkBuilder):
                     f"Unsupported road type '{road_type}'; expected one of {GNN_ROAD_TYPES}"
                 )
 
+        node_ids = {node.get("id") for node in nodes}
+        for edge in edges:
+            for endpoint_key in ("source", "target"):
+                endpoint = edge.get(endpoint_key)
+                if endpoint not in node_ids:
+                    raise ValueError(
+                        f"Unknown edge endpoint '{endpoint}' in {endpoint_key}; "
+                        "declare the node before referencing it"
+                    )
+
         return super().build_road_network(nodes, edges)
 
     def _road_type_encoding(self, road_type):

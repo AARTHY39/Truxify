@@ -184,7 +184,7 @@ class GNNRouteModel(nn.Module):
     def __init__(self, input_dim=GNN_NODE_FEATURE_DIM, hidden_dim=128, output_dim=32, edge_dim=GNN_EDGE_FEATURE_DIM,
                  in_channels=None, hidden_channels=None, out_channels=None):
         """Initialize GNN route model layers, dimensions, and attention."""
-        super(GNNRouteModel, self).__init__()
+        super().__init__()
         if in_channels is not None:
             input_dim = in_channels
         if hidden_channels is not None:
@@ -207,7 +207,6 @@ class GNNRouteModel(nn.Module):
         
         
         # Attention mechanism
-        self.attention = nn.MultiheadAttention(hidden_dim, num_heads=8)
         
         # Output layers
         self.lin1 = nn.Linear(hidden_dim, output_dim)
@@ -647,7 +646,7 @@ class RouteOptimizer:
         return max(score, 1e-6)
     
     @_serialize_model_mutation
-    def train(self, train_data, val_data=None, epochs=100):
+    def train(self, train_data, val_data=None, epochs=100, learning_rate=0.001):
         """Train GNN model with training-derived feature scaling."""
         if not train_data:
             raise ValueError("Training dataset cannot be empty")
@@ -658,7 +657,7 @@ class RouteOptimizer:
         model = copy.deepcopy(serving_model)
         scaler = GNNFeatureScaler.default().fit(train_data)
 
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
         criterion = nn.MSELoss()
 
         avg_loss = 0.0
@@ -736,7 +735,12 @@ class RouteOptimizer:
             if name.endswith('scale') and not (values > 0).all():
                 raise ValueError(f"Saved GNN feature scaler has nonpositive {name}")
         model = GNNRouteModel().to(self.device)
-        model.load_state_dict(checkpoint["state_dict"])
+        state_dict = {
+            key: value
+            for key, value in checkpoint["state_dict"].items()
+            if not key.startswith("attention.")
+        }
+        model.load_state_dict(state_dict)
         self._publish_model(model, scaler)
         logger.info(f"✅ Model and feature scaler loaded from {path}")
 
@@ -868,6 +872,10 @@ class RouteOptimizer:
     
     def multi_objective_optimization(self, start, end, graph_data, constraints=None):
         """Return a representative route together with the exact Pareto frontier."""
+        _, _, is_trained = self._serving_snapshot()
+        if not is_trained and not self.allow_untrained:
+            logger.error("Attempted route optimization on untrained model")
+            raise RuntimeError("GNN model is untrained. Load a trained checkpoint or enable dev mode.")
         objectives = ['time', 'cost', 'fuel']
         frontier = self._find_pareto_routes(start, end, graph_data, objectives, constraints)
         if not frontier:
