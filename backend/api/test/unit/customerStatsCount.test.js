@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import WebSocket from 'ws';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fixtures = vi.hoisted(() => ({
@@ -27,6 +28,9 @@ describe('customer order totals beyond the Data API row cap', () => {
   let counts;
   beforeEach(() => {
     vi.clearAllMocks();
+    // The repository's Node 20 CI has no native WebSocket. Realtime remains
+    // unused, but Supabase initializes its transport when constructing a client.
+    vi.stubGlobal('WebSocket', undefined);
     vi.stubEnv('CACHE_ENABLED', 'false');
     fixtures.cachedStats.mockResolvedValue(null);
     fixtures.cacheStats.mockResolvedValue(undefined);
@@ -43,12 +47,16 @@ describe('customer order totals beyond the Data API row cap', () => {
     });
     const client = createClient('https://count-test.invalid', 'test-only-key', {
       global: { fetch: transport },
+      realtime: { transport: WebSocket },
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
     });
     fixtures.admin = client;
     fixtures.fallback = client;
   });
-  afterEach(() => vi.unstubAllEnvs());
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
 
   it('counts every customer order beyond the default 1000-row cap', async () => {
     expect((await getCustomerStats('customer-a')).total_orders).toBe(1503);
