@@ -183,7 +183,6 @@ import crypto from "crypto";
 import { z } from "zod";
 import { verifyOtpHash } from "../lib/otpHashing.js";
 
-
 const AUTH_OTP_IN_MEMORY_MAX = parseInt(process.env.IN_MEMORY_OTP_MAP_MAX_SIZE || "10000", 10);
 const authOtpFailedAttempts = new Map();
 
