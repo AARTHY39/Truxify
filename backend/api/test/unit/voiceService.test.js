@@ -228,7 +228,7 @@ describe('voiceService', () => {
     });
 
     it('uses mock booking data to build response text', async () => {
-      const mockOrder = { status: 'in_transit', eta: '3 hours' };
+      const mockOrder = { order_display_id: 'booking-1', status: 'in_transit', eta: '3 hours' };
       const eqFn = vi.fn(() => ({
         or: vi.fn(() => ({
           maybeSingle: vi.fn(() => Promise.resolve({ data: mockOrder, error: null })),
@@ -242,7 +242,9 @@ describe('voiceService', () => {
       const result = await processVoiceQuery('user-1', 'booking-1', Buffer.from('audio'), 'audio.wav');
 
       expect(result.transcript).toBeTruthy();
-      expect(result.response_text).toContain('in transit');
+      expect(result.response_text).toContain(mockOrder.order_display_id);
+      expect(result.response_text).toContain(mockOrder.status);
+      expect(eqFn).toHaveBeenCalledWith('order_display_id', 'booking-1');
     });
 
     it('returns mock when only OPENAI_API_KEY is set', async () => {
