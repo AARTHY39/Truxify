@@ -110,7 +110,13 @@ class DiffusionRouteModel(nn.Module):
         self.input_proj = nn.Linear(input_dim, hidden_dim)
 
         # Condition projection layer
-        self.cond_proj = nn.Linear(cond_dim, hidden_dim) if cond_dim else None
+        if cond_dim is not None and (isinstance(cond_dim, bool)
+                or not isinstance(cond_dim, int) or cond_dim < 1):
+            raise ValueError("cond_dim must be a positive integer or None")
+        # Lazy parameters are registered now, so optimizers own them before the
+        # first conditional batch and materialization preserves their identity.
+        self.cond_proj = (nn.Linear(cond_dim, hidden_dim) if cond_dim is not None
+                          else nn.LazyLinear(hidden_dim))
 
         # Noise schedule (linear beta schedule)
         self.register_buffer('betas', self._get_linear_beta_schedule())
@@ -176,40 +182,43 @@ class DiffusionRouteModel(nn.Module):
         condition: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """Forward pass through diffusion backbone with condition embedding."""
+        # Admit all context before a lazy projection initializes or dropout
+        # consumes RNG. A materialized condition schema never changes silently.
+        if x.ndim != 3 or not x.shape[0] or not x.shape[1] or x.shape[-1] < self.input_dim:
+            raise ValueError("x must contain nonempty batch/sequence input rows")
         if x.shape[-1] > self.input_dim:
-            inferred_cond = x[..., self.input_dim:]
+            if condition is not None:
+                raise ValueError("conditions cannot be supplied twice")
+            condition = x[..., self.input_dim:]
             x = x[..., :self.input_dim]
-            if condition is None:
-                condition = inferred_cond
-
-        # Time embedding
-        t_emb = self.time_embed(timesteps)
-        t_emb = self.time_mlp(t_emb)
-        
-        # Input projection
-        x = self.input_proj(x)
-
-        # Condition projection
         if condition is not None:
-            if not isinstance(condition, torch.Tensor):
-                condition = torch.tensor(condition, dtype=torch.float32, device=x.device)
-            elif condition.device != x.device:
-                condition = condition.to(x.device)
-            if condition.dtype not in (torch.float32, torch.float64):
-                condition = condition.float()
-
-            if condition.dim() == 1:
+            condition = torch.as_tensor(condition, device=x.device)
+            if condition.is_complex() or condition.dtype == torch.bool:
+                raise ValueError("condition must contain finite real numeric values")
+            if condition.ndim == 1:
                 condition = condition.unsqueeze(0)
+            if (condition.ndim not in (2, 3) or condition.shape[-1] < 1
+                    or condition.shape[0] not in (1, x.shape[0])
+                    or (condition.ndim == 3 and condition.shape[1] not in (1, x.shape[1]))
+                    or not torch.isfinite(condition).all()):
+                raise ValueError("condition batch/sequence schema must match input")
+            width = self.cond_proj.weight.shape[1] if not isinstance(
+                self.cond_proj.weight, nn.parameter.UninitializedParameter) else None
+            if width is not None and condition.shape[-1] != width:
+                raise ValueError("condition width differs from the registered projection")
+            condition = condition.to(dtype=self.input_proj.weight.dtype)
+            if not torch.isfinite(condition).all():
+                raise ValueError("condition cannot be represented in model dtype")
 
-            cond_in = condition.shape[-1]
-            if self.cond_proj is None or self.cond_proj.in_features != cond_in:
-                self.cond_proj = nn.Linear(cond_in, self.hidden_dim).to(x.device)
-
+        t_emb = self.time_embed(timesteps).to(dtype=self.time_mlp[0].weight.dtype)
+        t_emb = self.time_mlp(t_emb)
+        x = self.input_proj(x)
+        if condition is not None:
             c = self.cond_proj(condition)
-            if c.dim() == 2:
+            if c.ndim == 2:
                 c = c.unsqueeze(1)
             x = x + c
-        
+
         # Diffusion blocks
         for block in self.blocks:
             if isinstance(block, ResBlock):
