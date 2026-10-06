@@ -6,6 +6,19 @@ from typing import Dict, List, Tuple, Any, Optional
 from collections import OrderedDict
 import logging
 import copy
+import math
+import os
+import tempfile
+import threading
+from functools import wraps
+
+
+def _generation_operation(method):
+    @wraps(method)
+    def owned(self, *args, **kwargs):
+        with self._generation_lock:
+            return method(self, *args, **kwargs)
+    return owned
 
 logger = logging.getLogger(__name__)
 
@@ -107,16 +120,25 @@ class MAML:
         outer_lr: float = 0.001,
         device: str = "cuda" if torch.cuda.is_available() else "cpu"
     ):
-        self.model = model.to(device)
+        self._generation_lock = threading.RLock()
+        self._generation = (model.to(device), None)
         self.inner_lr = inner_lr
         self.outer_lr = outer_lr
         self.device = device
         
-        self.outer_optimizer = torch.optim.Adam(self.model.parameters(), lr=outer_lr)
+        self._generation = (self.model, torch.optim.Adam(self.model.parameters(), lr=outer_lr))
         self.criterion = nn.MSELoss()
         
         logger.info(f"✅ MAML initialized on {self.device}")
     
+    @property
+    def model(self):
+        return self._generation[0]
+
+    @property
+    def outer_optimizer(self):
+        return self._generation[1]
+
     @staticmethod
     def _paired_targets(predictions, targets):
         """Scalar labels refer to rows, never a broadcast loss matrix."""
@@ -147,13 +169,20 @@ class MAML:
 
         return _AdaptedModel(model, adapted)
     
+    @_generation_operation
     def outer_update(self, meta_loss: torch.Tensor):
         """Perform outer loop update (meta-optimization)"""
+        # A loss built from a retired adapted generation must not silently step
+        # the newly published optimizer. Resolve gradients against this pair first.
+        parameters = tuple(self.model.parameters())
+        gradients = torch.autograd.grad(meta_loss, parameters)
         self.outer_optimizer.zero_grad()
-        meta_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+        for parameter, gradient in zip(parameters, gradients):
+            parameter.grad = gradient
+        torch.nn.utils.clip_grad_norm_(parameters, 1.0)
         self.outer_optimizer.step()
     
+    @_generation_operation
     def meta_train_step(
         self,
         tasks: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]],
@@ -205,6 +234,7 @@ class MAML:
             'final_loss': losses[-1]
         }
     
+    @_generation_operation
     def adapt(self, support_x: torch.Tensor, support_y: torch.Tensor, steps: int = 5,
               *, training: Optional[bool] = None) -> _AdaptedModel:
         """Adapt with private module modes and graph-preserving parameters."""
@@ -226,6 +256,7 @@ class MAML:
 
         return _AdaptedModel(working_model, adapted, copy_model=False)
     
+    @_generation_operation
     def predict(self, model: MAMLModel, x: torch.Tensor) -> torch.Tensor:
         """Make prediction with adapted model"""
         was_training = model.training
@@ -237,19 +268,125 @@ class MAML:
             model.train(was_training)
     
     def save(self, path: str = "models/maml_model.pth"):
-        """Save model"""
-        torch.save({
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.outer_optimizer.state_dict()
-        }, path)
-        logger.info(f"✅ Model saved to {path}")
-    
+        """Capture one owned pair; preserve the destination on failed serialization."""
+        with self._generation_lock:
+            model, optimizer = self._generation
+            snapshot = copy.deepcopy({
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+            })
+        destination = os.path.abspath(os.fspath(path))
+        fd, temporary = tempfile.mkstemp(prefix=".maml-", suffix=".tmp",
+                                         dir=os.path.dirname(destination))
+        try:
+            with os.fdopen(fd, "wb") as output:
+                torch.save(snapshot, output)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, destination)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        logger.info("MAML model saved to %s", path)
+
+    @staticmethod
+    def _validate_checkpoint_pair(model, optimizer, checkpoint):
+        if not isinstance(checkpoint, dict):
+            raise ValueError("MAML checkpoint must contain a model/Adam pair")
+        state = checkpoint.get('model_state_dict')
+        expected = model.state_dict()
+        if not isinstance(state, dict) or set(state) != set(expected):
+            raise ValueError("MAML model state keys do not match")
+        for key, reference in expected.items():
+            value = state[key]
+            if (not isinstance(value, torch.Tensor) or value.shape != reference.shape
+                    or value.dtype != reference.dtype or not torch.isfinite(value).all()):
+                raise ValueError("MAML model state must have matching finite tensors")
+        adam = checkpoint.get('optimizer_state_dict')
+        if not isinstance(adam, dict) or set(adam) != {'state', 'param_groups'}:
+            raise ValueError("MAML checkpoint must contain compatible Adam state")
+        groups = adam['param_groups']
+        if not isinstance(groups, list) or len(groups) != len(optimizer.param_groups):
+            raise ValueError("MAML Adam parameter groups do not match")
+        saved_ids = []
+        parameters = []
+        for group, reference in zip(groups, optimizer.param_groups):
+            if (not isinstance(group, dict)
+                    or not {'params', 'lr', 'betas', 'eps', 'weight_decay', 'amsgrad'}.issubset(group)
+                    or not set(group).issubset(optimizer.state_dict()['param_groups'][0])):
+                raise ValueError("MAML Adam group schema does not match")
+            ids = group['params']
+            if not isinstance(ids, list) or len(ids) != len(reference['params']):
+                raise ValueError("MAML Adam parameter groups do not match")
+            if ids != optimizer.state_dict()['param_groups'][0]['params']:
+                raise ValueError("MAML Adam parameter ordering does not match")
+            if any(type(item) is not int for item in ids):
+                raise ValueError("MAML Adam parameter IDs must be integers")
+            saved_ids.extend(ids)
+            parameters.extend(reference['params'])
+            for name in ('lr', 'eps', 'weight_decay'):
+                value = group[name]
+                if (type(value) not in (int, float) or not math.isfinite(value) or value < 0):
+                    raise ValueError("MAML Adam hyperparameters must be finite and nonnegative")
+            betas = group['betas']
+            if (not isinstance(betas, (tuple, list)) or len(betas) != 2
+                    or any(type(value) not in (int, float) or not math.isfinite(value)
+                           or not 0 <= value < 1 for value in betas)):
+                raise ValueError("MAML Adam betas must lie in [0,1)")
+            for name in ('amsgrad', 'maximize', 'capturable', 'differentiable', 'decoupled_weight_decay'):
+                if name in group and type(group[name]) is not bool:
+                    raise ValueError("MAML Adam flags must be booleans")
+            # This implementation uses ordinary Adam; reject incompatible execution
+            # modes rather than publishing a pair that fails on the next CPU step.
+            if group.get('capturable', False) or group.get('differentiable', False) or group.get('decoupled_weight_decay', False):
+                raise ValueError("MAML checkpoint uses an unsupported Adam execution mode")
+            for name in ('foreach', 'fused'):
+                if group.get(name) is not None and type(group[name]) is not bool:
+                    raise ValueError("MAML Adam execution flags must be boolean or None")
+            if group.get('foreach') and group.get('fused'):
+                raise ValueError("MAML Adam foreach and fused modes cannot both be enabled")
+        if len(set(saved_ids)) != len(saved_ids):
+            raise ValueError("MAML Adam parameter IDs must be unique")
+        states = adam['state']
+        if (not isinstance(states, dict) or any(type(key) is not int for key in states)
+                or not set(states).issubset(saved_ids)):
+            raise ValueError("MAML Adam state references unknown parameters")
+        by_id = dict(zip(saved_ids, parameters))
+        for group in groups:
+            for identifier in group['params']:
+                if identifier not in states:
+                    continue  # Valid uninitialized Adam parameter.
+                entry = states[identifier]
+                required = {'step', 'exp_avg', 'exp_avg_sq'}
+                if group['amsgrad']:
+                    required.add('max_exp_avg_sq')
+                if not isinstance(entry, dict) or set(entry) != required:
+                    raise ValueError("MAML Adam moment schema does not match")
+                step = entry['step']
+                if (not isinstance(step, torch.Tensor) or step.numel() != 1
+                        or not torch.isfinite(step).all() or step.item() < 0
+                        or step.item() != int(step.item())):
+                    raise ValueError("MAML Adam step must be a finite nonnegative integer scalar")
+                parameter = by_id[identifier]
+                for name in required - {'step'}:
+                    moment = entry[name]
+                    if (not isinstance(moment, torch.Tensor) or moment.shape != parameter.shape
+                            or moment.dtype != parameter.dtype or not torch.isfinite(moment).all()
+                            or (name != 'exp_avg' and (moment < 0).any())):
+                        raise ValueError("MAML Adam moments must match finite parameter tensors")
+        model.load_state_dict(state, strict=True)
+        optimizer.load_state_dict(adam)
+
     def load(self, path: str = "models/maml_model.pth"):
-        """Load model"""
-        checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.outer_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        logger.info(f"✅ Model loaded from {path}")
+        """Validate privately and publish one coherent native generation."""
+        checkpoint = torch.load(path, map_location=self.device, weights_only=True)
+        with self._generation_lock:
+            candidate_model = copy.deepcopy(self.model)
+            candidate_model.zero_grad(set_to_none=True)
+            candidate_optimizer = torch.optim.Adam(candidate_model.parameters(), lr=self.outer_lr)
+            self._validate_checkpoint_pair(candidate_model, candidate_optimizer, checkpoint)
+            self._generation = (candidate_model, candidate_optimizer)
+        logger.info("MAML model loaded from %s", path)
 
 class FewShotLearner:
     """Few-Shot Learning for Logistics Tasks"""
