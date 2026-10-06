@@ -178,6 +178,11 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
     final initialWsUrl = buildUrl();
     debugPrint('Connecting to tracking WebSocket at: $initialWsUrl');
 
+    final injectedSocket = widget.trackingWebSocket;
+    if (injectedSocket != null) {
+      // Injected socket (tests, previews): use it instead of dialing.
+      _trackingWebSocket = injectedSocket;
+    } else {
     _trackingWebSocket = ResilientWebSocket(
       initialWsUrl,
       urlFactory: buildUrl,
@@ -256,6 +261,7 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen>
     }, onDone: () {
       if (mounted) setState(() => _wsConnected = false);
     });
+    }
 
     _trackingWebSocket!.connect();
   }
