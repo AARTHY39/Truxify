@@ -46,7 +46,7 @@ export async function getLiveTrafficMultiplier(pickupLat, pickupLng) {
       } else {
         const origin = `${pickupLat},${pickupLng}`;
         const destination = `${pickupLat + 0.01},${pickupLng + 0.01}`;
-        const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${destination}&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+        const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${destination}&mode=driving&departure_time=now&key=${process.env.GOOGLE_MAPS_API_KEY}`;
         const response = await fetch(url);
         if (!response.ok) throw new Error(`Google API error: ${response.status}`);
         const data = await response.json();
@@ -298,7 +298,7 @@ export async function getTrafficForRoute(route, options = {}) {
       } else {
         const origin = `${nOriginLat},${nOriginLng}`;
         const destination = `${nDestLat},${nDestLng}`;
-        const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${destination}&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+        const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${destination}&mode=driving&departure_time=now&key=${process.env.GOOGLE_MAPS_API_KEY}`;
         const response = await fetch(url);
         if (!response.ok) throw new Error(`Google API error: ${response.status}`);
         const data = await response.json();
