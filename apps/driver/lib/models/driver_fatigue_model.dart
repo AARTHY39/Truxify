@@ -47,3 +47,25 @@ class FatigueMetrics {
     required this.timestamp,
   });
 }
+
+/// Wearable-synced driver fatigue profile from the sleep cycle predictor
+/// (the monitoring dashboard's model; distinct from the vision FatigueMetrics).
+class DriverFatigueProfile {
+  final String driverId;
+  final double currentFatigueScore; // 0-100
+  final int totalSleepMinutesLast24h;
+  final String sleepQuality; // "GOOD", "POOR"
+  final int averageHeartRateBpm;
+  final bool isLegallyAllowedToDrive;
+  final bool isPhysicallySafeToDrive;
+
+  const DriverFatigueProfile({
+    required this.driverId,
+    required this.currentFatigueScore,
+    required this.totalSleepMinutesLast24h,
+    required this.sleepQuality,
+    required this.averageHeartRateBpm,
+    required this.isLegallyAllowedToDrive,
+    required this.isPhysicallySafeToDrive,
+  });
+}
