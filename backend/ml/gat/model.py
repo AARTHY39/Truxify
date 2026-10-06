@@ -44,6 +44,18 @@ class GraphAttentionLayer(nn.Module):
         
         return x
 
+class GATModel(nn.Module):
+    """Single-block graph attention model: one multi-head attention layer
+    mapping in_features to out_features."""
+
+    def __init__(self, in_features: int, out_features: int, num_heads: int = 8, dropout: float = 0.1):
+        super().__init__()
+        self.layer = GraphAttentionLayer(in_features, out_features, num_heads=num_heads, dropout=dropout)
+
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        return self.layer(x, edge_index)
+
+
 class SpatialTemporalGAT(nn.Module):
     """Spatial-Temporal Graph Attention Network for Traffic Prediction"""
     
