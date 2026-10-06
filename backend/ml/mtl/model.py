@@ -55,6 +55,10 @@ class TaskSpecificHead(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.head(x)
 
+    def forward_for_loss(self, x: torch.Tensor) -> torch.Tensor:
+        """Raw classification logits; public forward still returns probabilities."""
+        return self.head[:-1](x) if self.task_type == 'classification' else self.head(x)
+
 class MultiTaskModel(nn.Module):
     """Multi-Task Learning Model"""
     
@@ -89,6 +93,12 @@ class MultiTaskModel(nn.Module):
         
         return outputs
     
+    def forward_for_loss(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Evaluate shared features once for the native mixed-task objective."""
+        shared_features = self.shared_encoder(x)
+        return {name: head.forward_for_loss(shared_features)
+                for name, head in self.task_heads.items()}
+
     def forward_single_task(self, x: torch.Tensor, task_name: str) -> torch.Tensor:
         shared_features = self.shared_encoder(x)
         return self.task_heads[task_name](shared_features)
@@ -240,7 +250,7 @@ class MultiTaskTrainer:
         
         # Forward pass
         x = x.to(self.device)
-        predictions = self.model(x)
+        predictions = self.model.forward_for_loss(x)
         
         # Move targets to device
         targets_device = {}
@@ -362,7 +372,7 @@ class MultiTaskTrainer:
         
         with torch.no_grad():
             val_data = val_data.to(self.device)
-            predictions = self.model(val_data)
+            predictions = self.model.forward_for_loss(val_data)
             
             targets_device = {}
             for task_name, target in val_targets.items():
