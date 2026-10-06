@@ -661,21 +661,56 @@ app.use('/api/blockchain', (req, _res, next) => {
 // ============================================================================
 app.use('/api/internal', requireApiKey, internalRoutes)
 
-// 🆕 Oracle Health Check Endpoint
-app.get('/api/oracle/health', (req, res) => {
+// ============================================================================
+// 🆕 OPENTELEMETRY HEALTH CHECK
+// ============================================================================
+app.get('/api/tracing/health', (req, res) => {
   res.json({
     status: 'healthy',
+    service: 'opentelemetry',
     version: '1.0.0',
-    oracleEnabled: true,
-    consensusThreshold: process.env.ORACLE_CONSENSUS_THRESHOLD || 2,
-    providers: {
-      chainlink: process.env.CHAINLINK_ENABLED === 'true',
-      customVerifier: true,
-      backupOracle: process.env.BACKUP_ORACLE_ENABLED === 'true'
-    },
+    isEnabled: tracing.isInitialized,
     timestamp: new Date().toISOString()
   })
 })
+
+// Root & 404 Controllers
+app.get('/', getRoot)
+app.use(notFound)
+
+// Sentry Error Handler
+app.use(sentryErrorHandler)
+
+// Global Error Handler
+app.use(errorHandler)
+
+const PORT = process.env.PORT || 4000
+
+server.listen(PORT, async () => {
+  logger.info(`Server running on port ${PORT}`)
+  
+  // Start background workers
+  startOutboxRelayWorker()
+  startEscrowReleaseReconciliation()
+  startEscrowRefundReconciliation()
+  startEscrowFundingReconciliation()
+  startReputationReconciliation()
+  startDocumentExpiryWorker()
+  startDlqWorker()
+  startStaleOrderWorker()
+  startDevicePruningWorker()
+  startWithdrawalSettlementWorker()
+
+  // Initialize WebSockets and servers
+  initWebSocketServer(server)
+  initLocationServer(server)
+  initWebRTCSignaling(server)
+
+  // Start blockchain monitoring divergence detector explicitly
+  stateDivergenceDetector.start?.()
+})
+
+export default app
 
 // ============================================================================
 // 🆕 GEOGRAPHIC SHARDING ROUTES
