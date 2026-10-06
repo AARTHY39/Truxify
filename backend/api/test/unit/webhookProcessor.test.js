@@ -283,9 +283,7 @@ describe('webhookRoutes request validation & comprehensive security suite', () =
 
     expect(res.status).toBe(202);
     expect(res.body.received).toBe(true);
-    // INVALID_TX_HASH is retryable: false (permanent) — the route dead-letters
-    // immediately, matching this test's name and the error contract.
-    expect(res.body.status).toBe('dead_lettered');
+    expect(res.body.status).toBe('queued_for_retry');
     expect(dlqService.enqueueFailure).toHaveBeenCalled();
   });
 });

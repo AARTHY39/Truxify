@@ -351,15 +351,6 @@ async function handlePaymentReleased(payload) {
   if (!payload.txHash) {
     throw new Error('Missing txHash in escrow release webhook payload — release requires on-chain proof');
   }
-  // Validate the hash format before touching the chain or the database.
-  const normalizedTxHash = normalizeTxHash(payload.txHash);
-  if (!normalizedTxHash) {
-    throw new EscrowVerificationError(
-      'INVALID_TX_HASH',
-      'PaymentReleased webhook requires a well-formed 32-byte transaction hash (0x + 64 hex chars)',
-      { retryable: false },
-    );
-  }
   const receipt = await verifyPolygonTransactionReceipt(payload.txHash);
   const order = await findOrderByIdOrDisplayId(payload.orderId);
   assertBookingBinding(payload, order);
@@ -426,7 +417,14 @@ async function handlePaymentReleased(payload) {
   }
   // Amount binding only after the order is known release-eligible.
   assertReceiptAmount(receipt, order, 'PaymentReleased');
-  const txHash = normalizedTxHash;
+  const txHash = normalizeTxHash(payload.txHash);
+  if (!txHash) {
+    throw new EscrowVerificationError(
+      'INVALID_TX_HASH',
+      'PaymentReleased webhook requires a well-formed 32-byte transaction hash (0x + 64 hex chars)',
+      { retryable: false },
+    );
+  }
 
   const verification = await verifyPolygonEscrowTransaction({
     txHash,
