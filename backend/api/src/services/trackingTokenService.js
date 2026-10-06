@@ -324,6 +324,35 @@ export class TrackingTokenService {
 
     return location || null;
   }
+
+  async validateAndGetPublicTrackingData(rawToken) {
+    const validation = await this.validateToken(rawToken);
+    if (!validation.valid) {
+      return validation;
+    }
+
+    const orderDisplayId = validation.token.order_display_id;
+
+    // Fetch order, timeline, and driver location using service-role client
+    const [orderRes, timelineRes, locationRes] = await Promise.all([
+      this._supabase.from('orders').select('*').eq('display_id', orderDisplayId).maybeSingle(),
+      this._supabase.from('order_timeline').select('*').eq('order_display_id', orderDisplayId),
+      this._supabaseAdmin.from('driver_locations').select('*').eq('order_display_id', orderDisplayId).maybeSingle(),
+    ]);
+
+    if (!orderRes.data) {
+      return { valid: false, reason: 'order_not_found' };
+    }
+
+    return {
+      valid: true,
+      data: {
+        order: orderRes.data,
+        timeline: timelineRes.data || [],
+        driverLocation: locationRes.data || null,
+      },
+    };
+  }
 }
 
 /*
@@ -393,33 +422,5 @@ module.exports = {
   issueTrackingToken,
   validateTrackingToken,
   updateLocationWithToken,
-  async validateAndGetPublicTrackingData(rawToken) {
-    const validation = await this.validateToken(rawToken);
-    if (!validation.valid) {
-      return validation;
-    }
-
-    const orderDisplayId = validation.token.order_display_id;
-
-    // Fetch order, timeline, and driver location using service-role client
-    const [orderRes, timelineRes, locationRes] = await Promise.all([
-      this._supabase.from('orders').select('*').eq('display_id', orderDisplayId).maybeSingle(),
-      this._supabase.from('order_timeline').select('*').eq('order_display_id', orderDisplayId),
-      this._supabaseAdmin.from('driver_locations').select('*').eq('order_display_id', orderDisplayId).maybeSingle(),
-    ]);
-
-    if (!orderRes.data) {
-      return { valid: false, reason: 'order_not_found' };
-    }
-
-    return {
-      valid: true,
-      data: {
-        order: orderRes.data,
-        timeline: timelineRes.data || [],
-        driverLocation: locationRes.data || null,
-      },
-    };
-  }
 };
 */
