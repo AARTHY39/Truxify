@@ -154,6 +154,24 @@ class ABTestModel:
             ]
 
             if not comparable_metrics:
+                has_shadow_data = any(
+                    values.get('shadow') is not None
+                    and pd.notna(values.get('shadow'))
+                    and math.isfinite(values.get('shadow'))
+                    for values in results.values()
+                )
+                if has_shadow_data:
+                    # Shadow metrics exist but none are comparable to production —
+                    # report a non-comparable evaluation rather than an error so
+                    # rollback handling can distinguish it from missing data.
+                    return {
+                        'test_id': test_id,
+                        'results': results,
+                        'shadow_better': False,
+                        'should_rollback': False,
+                        'has_comparison': False,
+                        'timestamp': datetime.utcnow().isoformat()
+                    }
                 return {
                     'test_id': test_id,
                     'results': results,
@@ -163,7 +181,7 @@ class ABTestModel:
                     'timestamp': datetime.utcnow().isoformat()
                 }
 
-           is_better = self.is_shadow_better(results)
+            is_better = self.is_shadow_better(results)
 
             has_comparison = len(comparable_metrics) > 0
             
