@@ -304,7 +304,7 @@ class CollaborativeFilter:
                 rank = len(recs)
                 recs.append({
                     f"{entity_type}_id": entity_id,
-                    "relevance_score": round(1.0 - rank * 0.05, 4),
+                    "relevance_score": round(max(0.0, 1.0 - rank * 0.05), 4),
                 })
                 if len(recs) >= top_n:
                     break
