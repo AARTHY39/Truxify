@@ -118,10 +118,10 @@ async def analyze_audio(file: UploadFile = File(...)):
         audio_data, sr = sf.read(io.BytesIO(contents))
         
         # Process audio
-        result = audio_monitor.process_audio(audio_data)
+        result = audio_monitor.process_audio(audio_data, sample_rate=int(sr))
         
         return {
-            'success': True,
+            'success': result.get('status') == 'OK',
             'data': result,
             'timestamp': datetime.now().isoformat()
         }
