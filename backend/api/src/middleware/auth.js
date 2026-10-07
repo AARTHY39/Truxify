@@ -828,7 +828,7 @@ export async function authenticate(req, res, next) {
  * Middleware to restrict route access to specific roles.
  * Must be used after authenticate middleware.
  */
-function requireRoleV2(allowedRoles) {
+export function requireRole(allowedRoles) {
   if (!Array.isArray(allowedRoles) || allowedRoles.length === 0) {
     throw new Error(
       "requireRole middleware requires a non-empty array of allowed roles.",
