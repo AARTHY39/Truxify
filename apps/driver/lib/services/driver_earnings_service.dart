@@ -302,7 +302,7 @@ class DriverEarningsService {
     } on ApiException {
       rethrow;
     } catch (e) {
-      throw Exception('Network error: Failed to withdraw funds.');
+      throw Exception('Network error: $e');
     }
   }
 
