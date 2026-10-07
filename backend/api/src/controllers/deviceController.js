@@ -427,6 +427,9 @@ export async function syncLocations(req, res, next) {
     let newestTimestamp = 0;
 
     for (const loc of locations) {
+      if (!loc || typeof loc !== 'object' || Array.isArray(loc)) {
+        continue;
+      }
       const lat = parseFloat(loc.latitude);
       const lng = parseFloat(loc.longitude);
       if (!Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lng) || lng < -180 || lng > 180) {
@@ -435,7 +438,13 @@ export async function syncLocations(req, res, next) {
       
       const parsedHeading = Number.isFinite(parseFloat(loc.heading)) ? parseFloat(loc.heading) : null;
       const parsedSpeed   = Number.isFinite(parseFloat(loc.speed))   ? parseFloat(loc.speed)   : null;
-      const recordedAt    = loc.recorded_at ? new Date(loc.recorded_at).toISOString() : new Date().toISOString();
+      const capturedAt = loc.recorded_at ? new Date(loc.recorded_at) : new Date();
+      // Match invalid-coordinate handling: a malformed point must not abort
+      // the other valid captures in an offline replay batch.
+      if (!Number.isFinite(capturedAt.getTime())) {
+        continue;
+      }
+      const recordedAt = capturedAt.toISOString();
 
       validLocations.push({
         driver_id: userId,
