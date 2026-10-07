@@ -178,13 +178,13 @@ export class FuelAdvisorService {
    * @returns {Promise<Object>} Recommendation payload
    */
   async getFuelRecommendation(truckId, destinationLat, destinationLng) {
-    this.logger?.info(`[FuelAdvisorService] Computing recommendation for truck ${truckId} heading to ${destinationLat},${destinationLng}`);
+    this.logger?.info({ event: 'FUEL_RECOMMENDATION_COMPUTE', truckId, destinationLat, destinationLng }, 'Computing fuel recommendation');
 
     // 1. Get average engine load from recent telemetry
     const avgEngineLoad = await this._getAverageEngineLoad(truckId);
 
     // 2. Get weather forecast for destination
-    const weather = await this.weatherService.getWeatherForecast(destinationLat, destinationLng);
+    const weather = await this._getWeatherSafely(destinationLat, destinationLng);
     if (!weather || !Number.isFinite(weather.temperature_c)) {
       this.logger?.warn('[FuelAdvisorService] Weather service unavailable or returned invalid data — using safe default B20.');
       return {
@@ -226,6 +226,20 @@ export class FuelAdvisorService {
         average_engine_load_percent: Math.round(avgEngineLoad)
       }
     };
+  }
+
+  /**
+   * Fetches a weather forecast without letting provider failures crash the
+   * recommendation, which deliberately degrades to a safe default. A throwing
+   * external API must not take down the whole fueling-advisor endpoint.
+   */
+  async _getWeatherSafely(destinationLat, destinationLng) {
+    try {
+      return await this.weatherService.getWeatherForecast(destinationLat, destinationLng);
+    } catch (err) {
+      this.logger?.warn(`[FuelAdvisorService] Weather service failed: ${err?.message ?? String(err)}`);
+      return null;
+    }
   }
 
   /**
@@ -291,7 +305,7 @@ export class FuelAdvisorService {
 
       return count > 0 ? totalLoad / count : 50;
     } catch (err) {
-      this.logger?.error(`[FuelAdvisorService] Error computing engine load: ${err?.message ?? String(err)}`);
+      this.logger?.error({ event: 'FUEL_ENGINE_LOAD_ERROR', error: err?.message ?? String(err) }, 'Error computing engine load');
       return 50; // Fallback
     }
   }

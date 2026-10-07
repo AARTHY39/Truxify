@@ -12,6 +12,7 @@ import { scanDocument, MalwareScanError } from '../lib/malwareScanner.js';
 import { PolicyError, policy } from '../security/policyEngine.js';
 import digilockerService from '../services/digilockerService.js';
 import { validateDocumentBuffer, DocumentValidationError } from '../lib/documentValidation.js';
+import zkpService from '../services/zkp/zkp.service.js';
 
 const router = express.Router();
 const orderVerificationLimiter = rateLimit({
@@ -115,9 +116,6 @@ router.post('/documents/check', documentCheckLimiter, authenticate, validateBody
   try {
     const { driverId } = req.body;
 
-    // IDOR guard: a caller may only inspect their own document/KYC status
-    // unless they hold an admin role (mirrors the ownership check used on the
-    // order-scoped verification routes).
     try {
       policy.authorize(req.user, 'document:view', { driverId });
     } catch (error) {
@@ -188,10 +186,8 @@ router.post('/digilocker/verify', digilockerLimiter, authenticate, async (req, r
 
 const KYC_ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png'];
 const KYC_MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-const OCR_HTTP_TIMEOUT_MS = 15000; // ML OCR can run long on large images
+const OCR_HTTP_TIMEOUT_MS = 15000;
 
-// Normalize/validate an identity document number extracted by OCR. Returns the
-// normalized value or `null` when the format is obviously invalid.
 function normalizeKycDocNumber(value) {
   if (typeof value !== 'string') return null;
   const cleaned = value.replace(/\s+/g, '').toUpperCase();
@@ -218,8 +214,6 @@ router.post('/kyc/upload', kycUploadLimiter, authenticate, upload.single('image'
       return res.status(400).json({ success: false, error: 'No image uploaded' });
     }
 
-    // Validate magic bytes and malware-scan before the buffer is forwarded to
-    // the ML endpoint (same hardening as the PoD upload at orderRoutes).
     try {
       validateDocumentBuffer(req.file.buffer, req.file.mimetype);
       const scanResult = await scanDocument(req.file.buffer, req.file.originalname);
@@ -237,7 +231,6 @@ router.post('/kyc/upload', kycUploadLimiter, authenticate, upload.single('image'
       throw error;
     }
 
-    // Set status to pending
     const { error: updateError } = await supabaseAdmin
       .from('driver_details')
       .update({ kyc_status: 'Pending KYC' })
@@ -275,11 +268,6 @@ router.post('/kyc/upload', kycUploadLimiter, authenticate, upload.single('image'
 
     const ocrData = await mlResponse.json();
 
-    // OCR output is only a *hint*. A bare ML/OCR `verified` boolean from an
-    // internal endpoint must never, on its own, flip a driver to KYC=Verified.
-    // Approval additionally requires an explicit government-source attestation
-    // flag (e.g. DigiLocker/registry) returned by the verification pipeline,
-    // binding the document to the user's real identity.
     const governmentAttested =
       ocrData && ocrData.attested === true && ocrData.verified === true;
 
@@ -315,6 +303,65 @@ router.post('/kyc/upload', kycUploadLimiter, authenticate, upload.single('image'
     res.status(500).json({
       success: false,
       error: error.message
+    });
+  }
+});
+
+const zkVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: safeIpKeyGenerator,
+  validate: { keyGeneratorIpFallback: false },
+  store: createStore('rl:zk-verify:'),
+  message: { error: 'Rate limit exceeded', retryAfter: 900 },
+});
+
+/**
+ * POST /api/verification/zk-verify-credential
+ * Verifies Groth16 ZKP driver credentials, ensures unexpired timestamp & unspent nullifier,
+ * and issues a signed session authorization token for bidding.
+ */
+router.post('/zk-verify-credential', zkVerifyLimiter, authenticate, async (req, res) => {
+  try {
+    const { proof, publicSignals } = req.body || {};
+    const userId = req.user?.id;
+
+    if (!proof || !publicSignals) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: proof and publicSignals must be provided',
+      });
+    }
+
+    const result = await zkpService.verifyCredentialProof({
+      proof,
+      publicSignals,
+      userId,
+    });
+
+    if (!result.success) {
+      const statusCode = result.code === 'NULLIFIER_ALREADY_SPENT' ? 409 : 400;
+      return res.status(statusCode).json({
+        success: false,
+        code: result.code,
+        error: result.error,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      verified: true,
+      token: result.sessionToken,
+      expiresAt: result.expiresAt,
+      nullifierHash: result.nullifierHash,
+    });
+  } catch (error) {
+    logger.error({ err: error, userId: req.user?.id }, '[ZKP] Error in zk-verify-credential route');
+    return res.status(500).json({
+      success: false,
+      error: 'Internal server error during credential verification',
     });
   }
 });
