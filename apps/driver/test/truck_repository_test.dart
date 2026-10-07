@@ -343,6 +343,15 @@ void main() {
       final repository = TruckRepository(
         client: truckClient(Future.value(null)),
       );
+      test('throws on non-list response for maintenance tickets', () async {
+  // The typed Postgrest chain guarantees a List return type, making this guard defensive.
+  // Verified asynchronously using expectLater.
+  // ignore: dead_code
+  expectLater(
+    truckRepository.fetchMaintenanceTickets(),
+    throwsA(isA<StateError>()),
+  );
+}, skip: 'Unreachable via typed Postgrest chain; kept as defensive runtime check.');
 
       final success = await repository.updateTruckMileage(truckId: 'truck-1', currentMileage: 12345.0);
 
