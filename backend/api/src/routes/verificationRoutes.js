@@ -207,6 +207,7 @@ const upload = multer({
   },
 });
 
+// Fixed #10258: `authenticate` runs BEFORE `upload.single('image')` to prevent unauthenticated memory-exhaustion DoS
 router.post('/kyc/upload', kycUploadLimiter, authenticate, upload.single('image'), async (req, res) => {
   try {
     const userId = req.user.id;
