@@ -24,7 +24,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y redis-server
-          python -m pip install numpy==1.26.4 scipy==1.14.1 opencv-python-headless==4.10.0.84 redis==5.0.0 pytest==9.0.3 ruff==0.16.9
+          python -m pip install numpy==1.26.4 scipy==1.11.3 opencv-python-headless==4.8.1.78 redis==5.0.0 pytest==9.0.3 ruff==0.16.9
       - name: Exercise synthetic native projections and actual selected vision methods
         env:
           PYTHONPATH: backend/ml
