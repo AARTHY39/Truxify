@@ -34,6 +34,9 @@ vi.mock('axios');
 const mockSupabaseFrom = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/config/db.js', () => ({
+  
+  redisClient: global.mockRedis,
+  upstashRedisClient: global.mockRedis,
   supabase: {
     from: mockSupabaseFrom,
   },
@@ -99,13 +102,15 @@ describe('voiceService', () => {
 
     it('returns order when bookingId is a display ID matching driver_id', async () => {
       const mockOrder = { id: 'order-1', order_display_id: 'DISP-001', status: 'picked_up' };
-      const eqFn = vi.fn(() => ({
-        or: vi.fn(() => ({
-          maybeSingle: vi.fn(() => Promise.resolve({ data: mockOrder, error: null })),
+      const orFn = vi.fn(() => ({
+        order: vi.fn(() => ({
+          limit: vi.fn(() => ({
+            maybeSingle: vi.fn(() => Promise.resolve({ data: mockOrder, error: null })),
+          })),
         })),
       }));
       const selectFn = vi.fn(() => ({
-        eq: eqFn,
+        or: orFn,
       }));
       mockSupabaseFrom.mockReturnValue({ select: selectFn });
 
@@ -129,8 +134,11 @@ describe('voiceService', () => {
 
       expect(result).toBeNull();
       expect(mockLogger.warn).toHaveBeenCalledWith(
-        'Orders table check failed in voiceService:',
-        'Table not found'
+        expect.objectContaining({
+          event: 'VOICE_ORDER_LOOKUP_ERROR',
+          error: expect.any(String),
+        }),
+        expect.any(String)
       );
     });
 
