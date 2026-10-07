@@ -168,7 +168,11 @@ export class TrackingTokenService {
       return { valid: false, reason: 'revoked' };
     }
 
-    if (new Date(token.expires_at) < new Date()) {
+    const expiresAt = new Date(token.expires_at).getTime();
+    if (!Number.isFinite(expiresAt)) {
+      return { valid: false, reason: 'validation_error' };
+    }
+    if (expiresAt <= Date.now()) {
       return { valid: false, reason: 'expired', tokenId: token.id };
     }
 
