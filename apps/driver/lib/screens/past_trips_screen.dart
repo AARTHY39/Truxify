@@ -439,12 +439,15 @@ class _PastTripsScreenState extends State<PastTripsScreen> {
                             ),
                           ),
                           const SizedBox(width: 4),
-                          Text(
-                            '/ 100',
-                            style: GoogleFonts.dmSans(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white60,
+                          Flexible(
+                            child: Text(
+                              '/ 100',
+                              overflow: TextOverflow.ellipsis,
+                              style: GoogleFonts.dmSans(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white60,
+                              ),
                             ),
                           ),
                         ],
