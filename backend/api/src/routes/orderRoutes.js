@@ -210,7 +210,6 @@ import {
   uploadPodFile,
   createPodSignedUrl
 } from '../lib/storage/podStorage.js';
-import { escrowLockManager } from '../lib/escrow/escrowLockManager.js';
 
 const router = express.Router();
 const MAX_GEOFENCE_RADIUS_M = 500;
@@ -835,9 +834,11 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
   }
 });
 
+//  ============================================================================
+//  18a. SUBMIT BID FOR A LOAD (DRIVER) — POST /api/orders/:id/bids
+//  18b. VIEW BIDS FOR AN ORDER (CUSTOMER) — GET /api/orders/:id/bids
+//  18c. ACCEPT A BID (CUSTOMER) — POST /api/orders/:id/bids/:bidId/accept
 
-// ============================================================================
-// 18a. SUBMIT BID FOR A LOAD (DRIVER) — POST /api/orders/:id/bids
 // ============================================================================
 /**
  * @openapi
