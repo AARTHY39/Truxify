@@ -297,7 +297,7 @@ export class FuelAdvisorService {
 
       for (const event of events) {
         const load = event.metadata?.engineLoad;
-        if (load !== undefined && load !== null && typeof load === 'number') {
+        if (Number.isFinite(load) && load >= 0 && load <= 100) {
           totalLoad += load;
           count++;
         }
