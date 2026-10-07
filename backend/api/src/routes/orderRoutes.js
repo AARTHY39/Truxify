@@ -197,6 +197,7 @@ import {
   getOrderHistory,
   getOrderDetails,
   verifyDeliveryController,
+  getOrderTimeline,
   resendOtp,
   changeDrop,
   cancelOrder,
@@ -602,6 +603,9 @@ router.get('/history', authenticate, userLimiter, requireRole(['customer']), get
 
 // 6. FETCH SPECIFIC ORDER DETAILS AND TIMELINE (CUSTOMER OR DRIVER)
 router.get('/:id', authenticate, userLimiter, validateParams(paramIdSchema), getOrderDetails);
+
+// 6b. FETCH ORDER TIMELINE (CUSTOMER OR ASSIGNED DRIVER)
+router.get('/:id/timeline', authenticate, userLimiter, validateParams(paramIdSchema), getOrderTimeline);
 
 // 13c. DRIVER OTP CONFIRM ALIAS — POST /api/orders/:id/confirm-otp
 // Friendly alias of /:id/verify-delivery for the driver app. It accepts the
