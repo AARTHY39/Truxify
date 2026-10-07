@@ -757,6 +757,47 @@ router.post('/:id/confirm-deposit', authenticate, userLimiter, requirePolicy('or
     }
   }
 }); 
+// Path 1: Already funded or confirmation path handling
+if (alreadyFunded) {
+  const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(
+    orderId, 
+    {
+      escrow_status: 'funded',
+      escrow_funding_error: null,
+      version: order.version + 1,
+      updated_at: new Date().toISOString(),
+    }, 
+    [
+      { op: 'eq', column: 'escrow_status', value: 'funding' },
+      { op: 'eq', column: 'version', value: order.version }
+    ], 
+    'id'
+  );
+
+  if (updateErr) {
+    return res.status(500).json({ success: false, error: updateErr.message });
+  }
+} else {
+  // Path 2: Standard confirm deposit success path
+  const { data: updatedData, error: updateErr } = await orderRepository.updateOrderWithFilter(
+    orderId, 
+    {
+      escrow_status: 'funded',
+      escrow_funding_error: null,
+      version: order.version + 1,
+      updated_at: new Date().toISOString(),
+    }, 
+    [
+      { op: 'eq', column: 'escrow_status', value: 'funding' },
+      { op: 'eq', column: 'version', value: order.version }
+    ], 
+    'id'
+  );
+
+  if (updateErr) {
+    return res.status(500).json({ success: false, error: updateErr.message });
+  }
+}
 router.post('/:id/confirm-deposit', authenticate, async (req, res, next) => {
      const orderId = req.params.id;
      
