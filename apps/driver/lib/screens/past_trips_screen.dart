@@ -211,7 +211,7 @@ class _PastTripsScreenState extends State<PastTripsScreen> {
 
   String _formatPaisa(dynamic amount) {
     if (amount == null) return '₹0';
-    final val = (Number.tryParse(amount.toString()) ?? 0.0) / 100.0;
+    final val = (num.tryParse(amount.toString()) ?? 0.0) / 100.0;
     return '₹${val.toStringAsFixed(0)}';
   }
 
@@ -238,14 +238,14 @@ class _PastTripsScreenState extends State<PastTripsScreen> {
     final isDark = theme.brightness == Brightness.dark;
 
     return Scaffold(
-      backgroundColor: isDark ? TruxifyColors.backgroundDark : Colors.grey[50],
+      backgroundColor: isDark ? TruxifyColors.darkBackground : Colors.grey[50],
       appBar: AppBar(
         title: Text(
           'Past Trips & Reputation',
           style: GoogleFonts.dmSans(fontWeight: FontWeight.bold, fontSize: 18),
         ),
         elevation: 0,
-        backgroundColor: isDark ? TruxifyColors.backgroundDark : Colors.white,
+        backgroundColor: isDark ? TruxifyColors.darkBackground : Colors.white,
         foregroundColor: isDark ? Colors.white : Colors.black,
       ),
       body: RefreshIndicator(
@@ -580,7 +580,7 @@ class _PastTripsScreenState extends State<PastTripsScreen> {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
       decoration: BoxDecoration(
-        color: isDark ? TruxifyColors.cardBackgroundDark : Colors.white,
+        color: isDark ? TruxifyColors.darkCardBackground : Colors.white,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: isDark ? TruxifyColors.darkBorder : Colors.grey[200]!,
@@ -802,7 +802,7 @@ class _PastTripsScreenState extends State<PastTripsScreen> {
             style: GoogleFonts.dmSans(
               fontSize: 13,
               fontWeight: FontWeight.bold,
-              color: negative ? Colors.red : (isDark ? Colors.white87 : Colors.black87),
+              color: negative ? Colors.red : (isDark ? Colors.white70 : Colors.black87),
             ),
           ),
         ],

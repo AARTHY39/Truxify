@@ -14,6 +14,12 @@ vi.mock('../../src/config/db.js', () => ({
   get createUserClient() {
     return dbMock.createUserClient || vi.fn(() => dbMock.supabase);
   },
+  
+  redisClient: global.mockRedis,
+  upstashRedisClient: global.mockRedis,
+  get supabase() { return supabaseMock.supabase; },
+  get supabaseAdmin() { return supabaseMock.supabase; },
+  createUserClient: () => supabaseMock.supabase,
 }));
 
 
