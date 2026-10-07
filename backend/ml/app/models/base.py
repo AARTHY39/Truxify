@@ -432,6 +432,12 @@ def restore_previous_model(model_name: str) -> bool:
         if previous is None or not _generation_exists(model_name, previous):
             logger.warning("No previous generation of model '%s' to restore", model_name)
             return False
+        if not _verify_artifact(_generation_model_path(model_name, previous)):
+            logger.error(
+                "Refusing to restore tampered previous generation of model '%s'",
+                model_name,
+            )
+            return False
         _atomic_write_json(active_path, {"generation": previous})
         if current and _generation_exists(model_name, current):
             _atomic_write_json(previous_path, {"generation": current})
