@@ -4,7 +4,9 @@ The analysis service accepts owned normalized finite PCM arrays: one or two
 channels, integer sample rates from 8 kHz to 192 kHz, and at most ten seconds.
 Decoded upload rates are forwarded; stereo is averaged and real Librosa resampling
 produces the 16 kHz model input. Float audio outside [-1, 1] is rejected rather
-than silently clipped. This service bound applies after decoding, not before it.
+than silently clipped. Resampling/noise-reduction intermediates can legitimately
+overshoot PCM amplitude; their revalidation checks finiteness without clipping.
+This service bound applies after decoding, not before it.
 
 Each mel, MFCC and chroma family occupies exactly 1000 elements, zero-padding
 short families independently. The real models receive 3000 finite features.
@@ -20,7 +22,7 @@ are not calibrated negative observations.
 
 ## Verification and limitations
 
-35 native tests use synthetic PCM, real Librosa/noise reduction, actual TensorFlow
+36 native tests use synthetic PCM, real Librosa/noise reduction, actual TensorFlow
 models with controlled real weights, SoundFile WAV decoding, and private Redis.
 The actual upload function and upload helpers are executed from repository source;
 unrelated legacy vision/model startup and full application bootstrap are excluded.

@@ -7,8 +7,13 @@ TARGET_RATE = 16000
 MAX_SECONDS = 10
 
 
-def admit_waveform(audio, sample_rate=TARGET_RATE):
-    """Copy finite mono/stereo PCM, downmix, and resample to the model rate."""
+def admit_waveform(audio, sample_rate=TARGET_RATE, *, normalized_pcm=True):
+    """Copy/downmix/resample input; finite DSP intermediates may overshoot PCM.
+
+    The external process_audio boundary uses normalized_pcm=True. Revalidation
+    after resampling/noise reduction checks shape/size/finiteness without clipping
+    the legitimate filter overshoot.
+    """
     if type(sample_rate) is not int or not 8000 <= sample_rate <= 192000:
         raise ValueError("sample rate must be an integer in [8000, 192000]")
     value = np.asarray(audio)
@@ -18,9 +23,12 @@ def admit_waveform(audio, sample_rate=TARGET_RATE):
         raise ValueError("audio must contain between one sample and ten seconds")
     if value.ndim == 2 and value.shape[1] not in (1, 2):
         raise ValueError("audio must have one or two channels")
-    if not np.isfinite(value).all() or np.max(np.abs(value.astype(np.float64))) > 1:
+    if not np.isfinite(value).all() or (
+        normalized_pcm and np.max(np.abs(value.astype(np.float64))) > 1
+    ):
         raise ValueError("audio must contain finite normalized PCM in [-1, 1]")
-    owned = value.astype(np.float32, copy=True)
+    with np.errstate(over="ignore", invalid="ignore"):
+        owned = value.astype(np.float32, copy=True)
     if owned.ndim == 2:
         owned = owned.mean(axis=1)
     if sample_rate != TARGET_RATE:

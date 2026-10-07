@@ -314,3 +314,16 @@ def test_unavailable_native_cache_retains_complete_unknown_report(monitor):
     finally:
         monitor.redis.close()
         monitor.redis = original
+
+
+def test_native_resampling_overshoot_is_not_rejected_as_external_pcm(monitor):
+    select(monitor.emergency_sound_model, 4)
+    select(monitor.honk_detection_model, 4)
+    select(monitor.speech_emotion_model, 0)
+    source = np.resize(np.array([1.0, 1.0, -1.0, -1.0], dtype=np.float32), 16000)
+    resampled = admit_waveform(source, 8000)
+    assert np.abs(resampled).max() > 1.0  # real filter ringing, no signal mock
+    result = monitor.process_audio(source, sample_rate=8000)
+    assert result["status"] == "OK"
+    assert result["alert_level"] == "SAFE"
+    np.testing.assert_array_equal(source[:4], [1.0, 1.0, -1.0, -1.0])

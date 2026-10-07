@@ -77,7 +77,7 @@ class AudioMonitor:
     
     def extract_features(self, audio_data: np.ndarray) -> np.ndarray:
         """Extract audio features"""
-        audio_data = admit_waveform(audio_data, self.sample_rate)
+        audio_data = admit_waveform(audio_data, self.sample_rate, normalized_pcm=False)
         # Mel-spectrogram
         mel_spec = librosa.feature.melspectrogram(
             y=audio_data,
@@ -113,7 +113,7 @@ class AudioMonitor:
         """Detect emergency sounds"""
         try:
             # Preprocess audio
-            audio_data = admit_waveform(audio_data, self.sample_rate)
+            audio_data = admit_waveform(audio_data, self.sample_rate, normalized_pcm=False)
             audio_clean = nr.reduce_noise(y=audio_data, sr=self.sample_rate)
             
             # Extract features
