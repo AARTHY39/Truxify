@@ -23,9 +23,12 @@ except ImportError:
     HAS_TF = False
 import redis
 import os
+import tempfile
 import logging
 from functools import partial
 from collections import deque, OrderedDict
+from app.execution import is_training_cancelled, TrainingCancelled
+from services.recovery_circuit import RecoveryCircuit
 
 logger = logging.getLogger(__name__)
 Base = declarative_base()
@@ -310,67 +313,91 @@ class TrafficPipeline:
 
         return {}
     
+    def _get_osrm_circuit(self):
+        # Lazy creation also supports lightweight callers that do not create
+        # database/model resources just to fetch routing data.
+        if not hasattr(self, '_osrm_circuit'):
+            self._osrm_circuit = RecoveryCircuit(
+                failure_threshold=int(os.getenv('OSRM_CIRCUIT_THRESHOLD', '5')),
+                recovery_seconds=float(os.getenv('OSRM_CIRCUIT_RECOVERY_SECONDS', '30')),
+            )
+            self._osrm_circuit.failures = self._osrm_failure_count
+        return self._osrm_circuit
+
+    def get_osrm_health(self):
+        """Local availability state; never performs a paid/live provider call."""
+        return self._get_osrm_circuit().snapshot()
+
     async def _fetch_osrm_data(self, source: Dict, dest: Dict):
-        """Fetch routing data from OSRM with timeout, retries and circuit breaker."""
-        if self._osrm_circuit_open:
-            return {
-                'speed': DEFAULT_TRAFFIC_SPEED,
-                'free_flow_speed': DEFAULT_FREE_FLOW_SPEED,
-            }
-
-        url = (
-            f"{self.osrm_url}/route/v1/driving/"
-            f"{source['lng']},{source['lat']};"
-            f"{dest['lng']},{dest['lat']}"
-        )
-
-        timeout = aiohttp.ClientTimeout(
-        connect=self.traffic_connect_timeout,
-        total=self.traffic_total_timeout,
-        )
-        max_attempts = 3
-
-        for attempt in range(max_attempts):
-            try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(url) as response:
-                        data = await response.json()
-
-                        if data.get('routes'):
-                            route = data['routes'][0]
-
-                            # Successful request resets the circuit-breaker state.
-                            self._osrm_failure_count = 0
-
-                            return {
-                                'duration': route['duration'],
-                                'distance': route['distance'],
-                                'speed': (
-                                    route['distance'] / route['duration']
-                                    if route['duration'] > 0
-                                    else DEFAULT_TRAFFIC_SPEED
-                                ),
-                                'free_flow_speed': (
-                                    route['distance'] / (route['duration'] * 0.8)
-                                    if route['duration'] > 0
-                                    else DEFAULT_FREE_FLOW_SPEED
-                                )
-                            }
-
-            except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError):
-                if attempt < max_attempts - 1:
-                    await asyncio.sleep(2 ** attempt)
-                else:
-                    self._osrm_failure_count += 1
-
-                    if self._osrm_failure_count >= 5:
-                        self._osrm_circuit_open = True
-
-        return {
+        """Bounded retries with recoverable admission and degraded fallback."""
+        fallback = {
             'speed': DEFAULT_TRAFFIC_SPEED,
             'free_flow_speed': DEFAULT_FREE_FLOW_SPEED,
         }
-    
+        circuit = self._get_osrm_circuit()
+        admission = circuit.admit()
+        if admission is None:
+            return fallback
+
+        # A half-open probe makes one HTTP request, not a new retry storm.
+        max_attempts = 1 if admission.probe else 3
+        finished = False
+        try:
+            url = (
+                f"{self.osrm_url}/route/v1/driving/"
+                f"{source['lng']},{source['lat']};"
+                f"{dest['lng']},{dest['lat']}"
+            )
+            timeout = aiohttp.ClientTimeout(
+                connect=self.traffic_connect_timeout,
+                total=self.traffic_total_timeout,
+            )
+            for attempt in range(max_attempts):
+                if not circuit.is_current(admission):
+                    return fallback
+                try:
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        async with session.get(url) as response:
+                            response.raise_for_status()
+                            data = await response.json()
+                            if data.get('routes'):
+                                route = data['routes'][0]
+                                result = {
+                                    'duration': route['duration'],
+                                    'distance': route['distance'],
+                                    'speed': (
+                                        route['distance'] / route['duration']
+                                        if route['duration'] > 0 else DEFAULT_TRAFFIC_SPEED
+                                    ),
+                                    'free_flow_speed': (
+                                        route['distance'] / (route['duration'] * 0.8)
+                                        if route['duration'] > 0 else DEFAULT_FREE_FLOW_SPEED
+                                    ),
+                                }
+                                circuit.finish(admission, succeeded=True)
+                                finished = True
+                                return result
+                            # NoRoute is a valid OSRM response, not an outage.
+                            if data.get('code') == 'NoRoute':
+                                circuit.finish(admission, succeeded=True)
+                                finished = True
+                                return fallback
+                            raise ValueError('OSRM response has no usable route')
+                except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError,
+                        ValueError, KeyError, TypeError, IndexError):
+                    if attempt < max_attempts - 1:
+                        await asyncio.sleep(2 ** attempt)
+            circuit.finish(admission, succeeded=False)
+            finished = True
+            logger.warning('OSRM request exhausted attempts; circuit state=%s', circuit.state)
+            return fallback
+        finally:
+            if not finished:
+                circuit.cancel(admission)
+            # Preserve existing diagnostics; the circuit owns admission state.
+            self._osrm_failure_count = circuit.failures
+            self._osrm_circuit_open = circuit.state != 'closed'
+
     async def get_real_time_traffic(self, route_id: str):
         """Get real-time traffic data for a route"""
         cached = await asyncio.get_running_loop().run_in_executor(None, partial(self.redis.get, f"traffic:{route_id}"))
@@ -386,7 +413,8 @@ class TrafficPipeline:
     ) -> float:
         """Predict ETA using an order-specific rolling history."""
         try:
-            if self.model is None:
+            model = self.model
+            if model is None:
                 logger.warning("ETA prediction unavailable because TensorFlow model is not loaded")
                 return None
             if route_data.ndim == 1:
@@ -425,7 +453,7 @@ class TrafficPipeline:
                 seq = [seq[0]] * (60 - len(seq)) + seq
 
             model_input = np.array(seq).reshape(1, 60, 5)
-            prediction = self.model.predict(model_input, verbose=0)
+            prediction = model.predict(model_input, verbose=0)
             return float(prediction[0][0])
         except Exception as e:
             logger.error(f"Prediction failed: {e}")
@@ -506,7 +534,11 @@ class TrafficPipeline:
         # Train with an explicit temporal holdout from every eligible route.
         # This avoids Keras selecting the last 20% of the combined route array,
         # which can make validation depend on route ordering rather than time.
-        self.model.fit(
+        # Train a separate instance so live predictions never observe weights
+        # being mutated by fit(). Publish it only after saving succeeds.
+        candidate = self._create_lstm_model()
+        candidate.set_weights(self.model.get_weights())
+        candidate.fit(
             X_train,
             y_train,
             epochs=epochs,
@@ -515,9 +547,26 @@ class TrafficPipeline:
             verbose=1
         )
         
-        # Save model
-        os.makedirs(os.path.dirname('models/eta_lstm.h5'), exist_ok=True)
-        self.model.save('models/eta_lstm.h5')
+        if is_training_cancelled():
+            raise TrainingCancelled()
+
+        model_path = 'models/eta_lstm.h5'
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        fd, temporary_path = tempfile.mkstemp(
+            prefix='.eta-lstm-', suffix='.h5', dir=os.path.dirname(model_path)
+        )
+        os.close(fd)
+        try:
+            candidate.save(temporary_path)
+            if is_training_cancelled():
+                raise TrainingCancelled()
+            # The old artifact stays readable until the complete replacement
+            # exists. In-flight predictions retain their old model reference.
+            os.replace(temporary_path, model_path)
+            self.model = candidate
+        finally:
+            if os.path.exists(temporary_path):
+                os.unlink(temporary_path)
         logger.info("Model trained and saved")
     
     def _create_sequences(self, data: pd.DataFrame, target_col: str, seq_length=60):
