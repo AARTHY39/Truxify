@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install scoped native dependencies
-        run: python -m pip install numpy==1.26.4 pandas==2.2.3 sqlalchemy==2.0.36 scikit-learn==1.5.2 pytest==9.0.3 ruff==0.16.9 fastapi==0.116.1 httpx==0.28.1
+        run: python -m pip install numpy==1.26.4 pandas==2.2.3 sqlalchemy==2.0.36 scikit-learn==1.5.2 pytest==9.0.3 ruff==0.16.9 fastapi==0.116.1 httpx==0.28.1 requests==2.34.2 aiohttp==3.13.3 redis==5.0.1
       - name: Verify native ledger and existing comparison contracts
         env:
           PYTHONPATH: backend/ml
