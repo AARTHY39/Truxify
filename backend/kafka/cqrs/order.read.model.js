@@ -340,8 +340,8 @@ class OrderReadModel {
   }
 
   /**
-   * Per-status order counts, derived from the snapshot payload stored in the
-   * single authoritative read model.
+   * Per-status order counts from the canonical `status` column of the single
+   * authoritative read model (the same column getOrderList filters on).
    */
     async getOrderStats() {
     const statuses = [
